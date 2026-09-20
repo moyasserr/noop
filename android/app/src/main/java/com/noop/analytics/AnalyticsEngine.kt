@@ -579,9 +579,13 @@ object AnalyticsEngine {
         // Resting Heart Rate: Use representative stable-block RHR from the primary sleep session,
         // guarding against transient nocturnal bradycardia dips by evaluating stable, low-variability
         // 30-min candidate blocks and taking the median of the lowest quartile.
+        // #804: Preserve ring/device-provided resting HR when present in `providedSleep`.
         // Falls back to the unweighted primary session mean if coverage is sparse.
         // Deliberately avoids falling back to `.min()` to prevent nap-induced floor distortion.
-        val restingHRDaily: Int? = primarySessionStableBlockRHR(physiologySessions, hr)?.roundToInt()
+        val providedPrimaryRHR = physiologySessions.maxByOrNull { it.end - it.start }
+            ?.let { p -> providedSleep.firstOrNull { it.start == p.start && it.end == p.end }?.restingHR }
+        val restingHRDaily: Int? = providedPrimaryRHR
+            ?: primarySessionStableBlockRHR(physiologySessions, hr)?.roundToInt()
             ?: primarySessionRestingHR(physiologySessions, hr)?.roundToInt()
         // Daily avg HRV = in-bed-weighted mean of per-session avg HRV (with Deep SWS priority).
         val avgHRVDaily: Double? = run {

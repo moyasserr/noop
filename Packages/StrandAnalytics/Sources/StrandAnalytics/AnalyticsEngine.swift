@@ -702,9 +702,13 @@ public enum AnalyticsEngine {
         // Resting Heart Rate: Use representative stable-block RHR from the primary sleep session,
         // guarding against transient nocturnal bradycardia dips by evaluating stable, low-variability
         // 30-min candidate blocks and taking the median of the lowest quartile.
+        // #804: Preserve ring/device-provided resting HR when present in `providedSleep`.
         // Falls back to the unweighted primary session mean if coverage is sparse.
         // Deliberately avoids falling back to `.min()` to prevent nap-induced floor distortion.
-        let restingHRDaily: Int? = primarySessionStableBlockRHR(sessions: physiologySessions, hr: hr).map { Int($0.rounded()) }
+        let providedPrimaryRHR = physiologySessions.max(by: { ($0.end - $0.start) < ($1.end - $1.start) })
+            .flatMap { p in providedSleep.first(where: { $0.start == p.start && $0.end == p.end })?.restingHR }
+        let restingHRDaily: Int? = providedPrimaryRHR
+            ?? primarySessionStableBlockRHR(sessions: physiologySessions, hr: hr).map { Int($0.rounded()) }
             ?? primarySessionRestingHR(sessions: physiologySessions, hr: hr).map { Int($0.rounded()) }
 
         // Daily avg HRV = in-bed-weighted mean of per-session avg HRV (with Deep SWS priority).
