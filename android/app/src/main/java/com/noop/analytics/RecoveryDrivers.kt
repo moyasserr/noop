@@ -141,8 +141,14 @@ object RecoveryDrivers {
         // surface it while real firings accumulate. See the header in RecoveryScorer.kt.
         val hrvZFull = RecoveryScorer.zScore(hrv, hrvBaseline.baseline, hrvBaseline.spread)
         val rhrZFull: Double? = rhrB?.let { RecoveryScorer.zScore(it.baseline, rhr, it.spread) }
-        val hrvSaturationDetected =
-            RecoveryScorer.parasympatheticSaturation(hrvZ = hrvZFull, rhrZ = rhrZFull).active
+        val vagalAssessment = RecoveryScorer.assessVagalSaturation(
+            hrvZ = hrvZFull,
+            rhrZ = rhrZFull,
+            hrvBaseline = RecoveryScorer.DriverBaseline(hrvBaseline),
+            rhrBaseline = rhrB?.let { RecoveryScorer.DriverBaseline(it) },
+            baselineNights = hrvBaseline.nValid,
+        )
+        val hrvSaturationDetected = vagalAssessment.possibleVagalSaturation
 
         // One row per present term, appended in the SAME order the iOS twin uses (HRV, resting HR, Sleep,
         // respiration, skin temp), then sorted biggest-mover-first so the row that explains the most sits on

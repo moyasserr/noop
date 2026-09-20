@@ -55,6 +55,72 @@ object PrimarySessionRestingHR {
         return valid.sum().toDouble() / valid.size
     }
 
+    /** Engineering parameters for the representative stable sleep-block RHR. */
+    const val DEFAULT_STABLE_BLOCK_MAX_SIGMA: Double = 3.5
+    const val DEFAULT_BLOCK_SAMPLE_COUNT: Int = 1800
+    const val DEFAULT_BLOCK_STEP_SAMPLES: Int = 300
+    const val FALLBACK_BLOCK_SAMPLE_COUNT: Int = 900
+
+    /**
+     * Derives RHR from a representative stable, low-variability sleep block within the primary session,
+     * guarding against transient nocturnal bradycardia by taking the median of the lowest-quartile stable blocks.
+     * Twin of Swift `PrimarySessionRestingHR.stableBlockRHR`.
+     */
+    fun stableBlockRHR(
+        sessions: List<Session>,
+        validBpm: IntRange = DEFAULT_VALID_BPM,
+        maxSigma: Double = DEFAULT_STABLE_BLOCK_MAX_SIGMA,
+        primaryBlockLength: Int = DEFAULT_BLOCK_SAMPLE_COUNT,
+        stepLength: Int = DEFAULT_BLOCK_STEP_SAMPLES,
+        fallbackBlockLength: Int = FALLBACK_BLOCK_SAMPLE_COUNT,
+        minValidSamples: Int = DEFAULT_MIN_VALID_SAMPLES,
+    ): Double? {
+        val primary = sessions.maxByOrNull { it.durationSec } ?: return null
+        val valid = primary.bpm.filter { it in validBpm }
+        if (valid.size < minValidSamples) return null
+
+        val evaluateBlocks = { blockLength: Int ->
+            if (valid.size < blockLength) {
+                emptyList<Double>()
+            } else {
+                val candidateMeans = ArrayList<Double>()
+                var start = 0
+                while (start + blockLength <= valid.size) {
+                    val slice = valid.subList(start, start + blockLength)
+                    val count = slice.size.toDouble()
+                    val mean = slice.sum().toDouble() / count
+                    var varianceSum = 0.0
+                    for (v in slice) {
+                        val diff = v.toDouble() - mean
+                        varianceSum += diff * diff
+                    }
+                    val sigma = kotlin.math.sqrt(varianceSum / kotlin.math.max(count - 1.0, 1.0))
+                    if (sigma <= maxSigma) {
+                        candidateMeans.add(mean)
+                    }
+                    start += stepLength
+                }
+                candidateMeans
+            }
+        }
+
+        var qualifying = evaluateBlocks(primaryBlockLength)
+        if (qualifying.isEmpty()) {
+            qualifying = evaluateBlocks(fallbackBlockLength)
+        }
+
+        if (qualifying.isNotEmpty()) {
+            val sorted = qualifying.sorted()
+            val quartileCount = kotlin.math.max(1, sorted.size / 4)
+            val lowestQuartile = sorted.subList(0, quartileCount)
+            val midIndex = lowestQuartile.size / 2
+            return lowestQuartile[midIndex]
+        }
+
+        // If no candidate block meets the strict stability threshold, fall back to the unweighted primary session mean
+        return valid.sum().toDouble() / valid.size
+    }
+
     /** #1169 coverage INPUTS for the same primary session [meanHR] averages: its valid-sample count and its
      *  duration. The fixed [minValidSamples] gate is cadence-blind, so the accruing shadow dataset needs to
      *  weight/filter each night by how well-covered it was — but this records the RAW inputs, not a derived

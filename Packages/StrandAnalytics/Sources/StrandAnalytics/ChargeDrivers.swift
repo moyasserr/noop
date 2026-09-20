@@ -165,8 +165,15 @@ extension RecoveryScorer {
         // below is the full, unguarded HRV penalty. The verdict merely NAMES the detected pattern so the
         // UI can surface it while real firings accumulate. See the MARK header in RecoveryScorer.swift.
         let hrvZFull = zScore(hrv, mean: hrvBaseline.baseline, spread: hrvBaseline.spread)
-        let rhrZFull: Double? = rhrB.map { zScore($0.baseline, mean: rhr, spread: $0.spread) }
-        let hrvSaturationDetected = parasympatheticSaturation(hrvZ: hrvZFull, rhrZ: rhrZFull).active
+        let rhrZFull: Double? = rhrB.flatMap { zScore($0.baseline, mean: rhr, spread: $0.spread) }
+        let vagalAssessment = assessVagalSaturation(
+            hrvZ: hrvZFull,
+            rhrZ: rhrZFull,
+            hrvBaseline: DriverBaseline(hrvBaseline),
+            rhrBaseline: rhrB.map(DriverBaseline.init),
+            baselineNights: hrvBaseline.nValid
+        )
+        let hrvSaturationDetected = vagalAssessment.possibleVagalSaturation
 
         // ── HRV (dominant driver; always present once the score exists) ──────────
         // Higher HRV vs baseline supports recovery. Neutral = HRV at the baseline mean.

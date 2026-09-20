@@ -3003,12 +3003,36 @@ public enum SleepStager {
             // analyze() pipeline. The 0x2A37 RR on a WHOOP 5/MG is PPG-derived and noisier
             // than a 4.0's; rMSSD is built from SUCCESSIVE differences, so an un-rejected
             // jitter spike inflates the session HRV. Ectopic rejection drops those (#262/#235).
-            // #204/#195: gap-aware — a successive difference straddling a dropped beat is skipped so a
-            // removed out-of-range/ectopic beat can't splice its neighbours into a spurious delta.
+            // Multi-criteria HRV window validity:
+            // A. Temporal coverage: valid NN intervals must span >= 60% of the 5-minute window.
+            // B. Sequential NN density: require at least one contiguous run of >= 30 clean beats.
+            // C. Artifact quality: dropped/ectopic intervals must not exceed 15% of the window.
+            // D. Minimum NN count: require at least 40 valid intervals in the window.
             let cleaned = HRVAnalyzer.cleanRRGapAware(bucket)
-            // Baek (2015) reliability floor: require at least 20 clean beats in a 5-min window
-            // to compute RMSSD, eliminating artifact-inflated spikes from sparse/jittery windows.
-            let rmssd: Double? = (cleaned.nn.count >= 20) ? HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) : nil
+            let validDurationS = cleaned.nn.reduce(0, +) / 1000.0
+            let temporalCoverage = validDurationS / Double(windowS)
+            let cleanCount = cleaned.nn.count
+            let rawCount = bucket.count
+            let artifactRatio = rawCount > 0 ? Double(rawCount - cleanCount) / Double(rawCount) : 1.0
+
+            var maxContiguousRun = 0
+            var currentRun = 0
+            for c in cleaned.contiguous {
+                if c {
+                    currentRun += 1
+                    if currentRun > maxContiguousRun { maxContiguousRun = currentRun }
+                } else {
+                    currentRun = 1
+                    if currentRun > maxContiguousRun { maxContiguousRun = currentRun }
+                }
+            }
+
+            let passesQuality = (temporalCoverage >= 0.60)
+                && (maxContiguousRun >= 30)
+                && (artifactRatio <= 0.15)
+                && (cleanCount >= 40)
+
+            let rmssd: Double? = passesQuality ? HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) : nil
             let center = t + windowS / 2
             let stage = stages.first { center >= $0.start && center < $0.end }?.stage ?? "?"
             out.append(HrvWindow(startTs: t, stage: stage, cleanBeats: cleaned.nn.count, rmssd: rmssd))
@@ -3027,6 +3051,46 @@ public enum SleepStager {
         }
         if !cur.isEmpty { lastRun = cur }
         return lastRun
+    }
+
+    /// Selects the optimal Slow-Wave Sleep (SWS) run from candidate deep runs, scoring candidates
+    /// based on contiguous duration, valid RMSSD density, and early-night timing (accounting for the
+    /// physiological reality that robust homeostatic SWS delta power concentrates in early cycles).
+    /// Twin of Kotlin `SleepStager.optimalDeepRun`.
+    static func optimalDeepRun(_ windows: [HrvWindow], sessionStart: Int64, sessionEnd: Int64) -> [HrvWindow] {
+        var runs: [[HrvWindow]] = []
+        var cur: [HrvWindow] = []
+        for w in windows {
+            if w.stage == "deep" {
+                cur.append(w)
+            } else if !cur.isEmpty {
+                runs.append(cur)
+                cur.removeAll()
+            }
+        }
+        if !cur.isEmpty { runs.append(cur) }
+
+        let duration = Double(max(sessionEnd - sessionStart, 1))
+        var bestRun: [HrvWindow] = []
+        var bestScore = -1.0
+
+        for run in runs {
+            let validCount = run.compactMap { $0.rmssd }.count
+            guard validCount > 0 else { continue }
+            guard let firstW = run.first, let lastW = run.last else { continue }
+            let centerTs = Double(firstW.startTs + lastW.startTs + 300) / 2.0
+            let relPos = max(0.0, min(1.0, (centerTs - Double(sessionStart)) / duration))
+            // Early-night timing bonus: SWS in early cycles represents deeper, more consolidated homeostatic delta power.
+            let timingWeight = 1.0 + 0.25 * (1.0 - relPos)
+            // Duration weight: prefer longer contiguous runs over 1-window blips (saturating around 30 min / 6 windows)
+            let durationWeight = min(Double(validCount), 6.0)
+            let score = durationWeight * timingWeight
+            if score > bestScore {
+                bestScore = score
+                bestRun = run
+            }
+        }
+        return bestRun
     }
 
     // MARK: - AASM hypnogram metrics

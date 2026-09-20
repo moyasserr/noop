@@ -223,11 +223,92 @@ object RecoveryScorer {
      *   POSITIVE value means resting HR is below baseline (the recovery-good direction). null when there
      *   is no resting-HR baseline — with nothing to corroborate the low HRV, the guard never fires.
      */
-    internal fun parasympatheticSaturation(hrvZ: Double, rhrZ: Double?): ParasympatheticSaturation {
-        // Without a resting-HR term there is nothing to corroborate the low HRV: benign saturation and
+    /**
+     * Vagal (parasympathetic) saturation assessment.
+     * Advisory / probabilistic model requiring longitudinal baseline context rather than acute easing.
+     */
+    data class VagalSaturationAssessment(
+        val possibleVagalSaturation: Boolean,
+        val confidence: String,
+        val explanation: String,
+        val decouplingSigma: Double,
+    )
+
+    /**
+     * Evaluates candidate vagal saturation as a probabilistic, advisory assessment requiring
+     * longitudinal baseline context (e.g. low resting HR baseline <= 55 bpm, high baseline HRV >= 50 ms, N >= 14)
+     * to distinguish benign saturation in endurance athletes from parasympathetic overreaching.
+     * Purely advisory; does NOT alter core recovery scoring.
+     * Twin of Swift `RecoveryScorer.assessVagalSaturation`.
+     */
+    fun assessVagalSaturation(
+        hrvZ: Double?,
+        rhrZ: Double?,
+        hrvBaseline: DriverBaseline?,
+        rhrBaseline: DriverBaseline?,
+        baselineNights: Int? = null,
+    ): VagalSaturationAssessment {
+        if (hrvZ == null || rhrZ == null || hrvBaseline == null || rhrBaseline == null) {
+            return VagalSaturationAssessment(
+                possibleVagalSaturation = false,
+                confidence = "none",
+                explanation = "Insufficient baseline or acute data to evaluate vagal saturation.",
+                decouplingSigma = 0.0,
+            )
+        }
+        val hrvLow = -hrvZ
+        val rhrLow = rhrZ
+        if (hrvLow < satEnterZ || rhrLow < satEnterZ) {
+            return VagalSaturationAssessment(
+                possibleVagalSaturation = false,
+                confidence = "none",
+                explanation = "Normal autonomic coupling (no significant low-HRV / low-RHR decoupling).",
+                decouplingSigma = 0.0,
+            )
+        }
+        val decoupling = min(hrvLow, rhrLow)
+        val nights = baselineNights ?: 14
+        val hasAerobicBaseline = (hrvBaseline.mean >= 50.0) && (rhrBaseline.mean <= 55.0)
+        val hasSufficientNights = nights >= 14
+
+        return if (hasAerobicBaseline && hasSufficientNights) {
+            val conf = if (decoupling >= 1.5) "high" else "medium"
+            VagalSaturationAssessment(
+                possibleVagalSaturation = true,
+                confidence = conf,
+                explanation = "Low HRV co-occurs with low resting HR against a high-parasympathetic baseline (RHR <= 55 bpm, HRV >= 50 ms). This pattern may represent benign vagal saturation rather than autonomic fatigue.",
+                decouplingSigma = decoupling,
+            )
+        } else {
+            VagalSaturationAssessment(
+                possibleVagalSaturation = false,
+                confidence = "low",
+                explanation = "Acute low-HRV / low-RHR decoupling detected, but longitudinal baseline (RHR=${rhrBaseline.mean.roundToInt()} bpm, HRV=${hrvBaseline.mean.roundToInt()} ms, N=$nights) does not meet aerobic saturation criteria. Low score preserved to guard against parasympathetic overreaching.",
+                decouplingSigma = decoupling,
+            )
+        }
+    }
+
+    /**
+     * Detect parasympathetic saturation from tonight's HRV and resting-HR z-scores and compute the
+     * easing that WOULD be applied to the low-HRV penalty (shrinking its negative z toward 0). Mirrors
+     * Swift `RecoveryScorer.parasympatheticSaturation` byte-for-byte.
+     *
+     * This is pure detection + a counterfactual. It has no effect on Charge: recovery() scores the raw
+     * HRV z regardless of what this returns. See the header above for the validation gap and the
+     * contested premise that keep the easing switched off.
+     *
+     * @param hrvZ the HRV term as recovery() builds it, (hrv - mu)/sigma. Higher is better; a NEGATIVE
+     *   value means HRV is below baseline (the penalty direction).
+     * @param rhrZ the resting-HR term as recovery() builds it, (mu - rhr)/sigma. Higher is better; a
+     *   POSITIVE value means resting HR is below baseline (the recovery-good direction). null when there
+     *   is no resting-HR baseline — with nothing to corroborate the low HRV, the guard never fires.
+     */
+    internal fun parasympatheticSaturation(hrvZ: Double?, rhrZ: Double?): ParasympatheticSaturation {
+        // Without both terms there is nothing to corroborate the low HRV: benign saturation and
         // real fatigue are indistinguishable from HRV alone, so report no saturation.
-        if (rhrZ == null) {
-            return ParasympatheticSaturation(easedHrvZ = hrvZ, active = false, dampFraction = 0.0)
+        if (hrvZ == null || rhrZ == null) {
+            return ParasympatheticSaturation(easedHrvZ = hrvZ ?: 0.0, active = false, dampFraction = 0.0)
         }
         // Saturation SIGNATURE, in personal-sigma units:
         //   hrvLow > 0 <=> HRV below baseline (the penalty we might ease)
@@ -278,9 +359,15 @@ object RecoveryScorer {
         constructor(state: BaselineState) : this(mean = state.baseline, spread = state.spread)
     }
 
-    /** Robust z-score using EWMA spread: (value − mean) / (1.253 × spread). */
-    internal fun zScore(value: Double, mean: Double, spread: Double): Double {
-        val sigma = max(1.253 * spread, 1e-9)
+    /** Robust z-score using EWMA spread: (value − mean) / (1.253 × spread).
+     *  Guarded against near-zero variance using an epsilon spread (spread < 0.10 => null)
+     *  rather than fabricating variability, avoiding division-by-near-zero explosion.
+     *  Twin of Swift `RecoveryScorer.zScore`.
+     */
+    internal fun zScore(value: Double, mean: Double, spread: Double, epsilonSpread: Double = 0.10): Double? {
+        if (spread.isNaN() || spread < epsilonSpread) return null
+        val sigma = 1.253 * spread
+        if (sigma < 0.10) return null
         return (value - mean) / sigma
     }
 
@@ -337,29 +424,26 @@ object RecoveryScorer {
         // Cold-start gate: HRV is the dominant driver; if its baseline isn't
         // usable, refuse to score (more honest than a fabricated value).
         if (!hrvBaselineUsable) return null
-        // Required-driver gate: the HRV baseline is REQUIRED for a score. It is nullable here only
-        // for callers that may not have one yet, and hrvBaselineUsable defaults to true, so without
-        // this an absent baseline let any other optional term (sleepPerf alone, say) produce a
-        // Charge score carrying no HRV term at all.
+        // Required-driver gate: the HRV baseline is REQUIRED for a score.
         val hrvB = hrvBaseline ?: return null
 
         val terms = ArrayList<Pair<Double, Double>>() // (z, weight)
 
         // HRV term: higher is better.
-        //
-        // INSTRUMENT-FIRST CALL SITE for the parasympathetic-saturation guard. The guard is NOT applied
-        // here: this term is the RAW z, so Charge is byte-identical to pre-guard behaviour. The
-        // signature is still detected and reported out-of-band (Charge trace + RecoveryDrivers verdict)
-        // so real firings can be counted first. See the header above for why, and swap in
-        // parasympatheticSaturation(hrvZ, rhrZ).easedHrvZ here to enable it.
-        terms.add(zScore(hrv, hrvB.mean, hrvB.spread) to wHRV)
-        // RHR term: lower is better → (μ − x) / σ.
+        // Guarded against near-zero variance; if dominant driver has near-zero variance, refuse to score.
+        val hrvZ = zScore(hrv, hrvB.mean, hrvB.spread) ?: return null
+        terms.add(hrvZ to wHRV)
+        // RHR term: lower is better → (μ − x) / σ. Guarded against near-zero variance.
         rhrBaseline?.let { b ->
-            terms.add(zScore(b.mean, rhr, b.spread) to wRHR)
+            zScore(b.mean, rhr, b.spread)?.let { rhrZ ->
+                terms.add(rhrZ to wRHR)
+            }
         }
-        // Resp term: lower is better, optional.
+        // Resp term: lower is better, optional. Guarded against near-zero variance.
         if (resp != null && respBaseline != null) {
-            terms.add(zScore(respBaseline.mean, resp, respBaseline.spread) to wResp)
+            zScore(respBaseline.mean, resp, respBaseline.spread)?.let { respZ ->
+                terms.add(respZ to wResp)
+            }
         }
         // Sleep-performance term: no baseline needed; centered at SLEEP_PERF_CENTER.
         if (sleepPerf != null) {
@@ -380,9 +464,9 @@ object RecoveryScorer {
         // same "lower is better" direction as RHR/resp → (μ − x) / σ. Needs BOTH the value
         // and a baseline, matching resp's pattern; added only when both are supplied.
         if (priorDayEffort != null && effortBaseline != null) {
-            terms.add(
-                zScore(effortBaseline.mean, priorDayEffort, effortBaseline.spread) to wActivityBalance,
-            )
+            zScore(effortBaseline.mean, priorDayEffort, effortBaseline.spread)?.let { effortZ ->
+                terms.add(effortZ to wActivityBalance)
+            }
         }
 
         if (terms.isEmpty()) return null

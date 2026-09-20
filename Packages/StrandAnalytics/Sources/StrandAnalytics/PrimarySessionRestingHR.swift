@@ -78,6 +78,71 @@ public enum PrimarySessionRestingHR {
         }
     }
 
+    /// Engineering parameters for the representative stable sleep-block RHR.
+    /// Tunable stability threshold (maximum standard deviation within a candidate block).
+    public static let defaultStableBlockMaxSigma: Double = 3.5
+    /// Primary block sample count (approx. 30 minutes at 1 Hz).
+    public static let defaultBlockSampleCount: Int = 1800
+    /// Block sliding step (approx. 5 minutes at 1 Hz).
+    public static let defaultBlockStepSamples: Int = 300
+    /// Fallback block sample count for shorter/fragmented sleep (approx. 15 minutes at 1 Hz).
+    public static let fallbackBlockSampleCount: Int = 900
+
+    /// Derives RHR from a representative stable, low-variability sleep block within the primary session,
+    /// explicitly guarding against transient nocturnal bradycardia by taking the median of the lowest-quartile
+    /// stable blocks rather than the absolute minimum. Twin of Kotlin `PrimarySessionRestingHR.stableBlockRHR`.
+    public static func stableBlockRHR(sessions: [Session],
+                                      validBpm: ClosedRange<Int> = defaultValidBpm,
+                                      maxSigma: Double = defaultStableBlockMaxSigma,
+                                      primaryBlockLength: Int = defaultBlockSampleCount,
+                                      stepLength: Int = defaultBlockStepSamples,
+                                      fallbackBlockLength: Int = fallbackBlockSampleCount,
+                                      minValidSamples: Int = defaultMinValidSamples) -> Double? {
+        guard let primary = sessions.max(by: { $0.durationSec < $1.durationSec }) else { return nil }
+        let valid = primary.bpm.filter { validBpm.contains($0) }
+        guard valid.count >= minValidSamples else { return nil }
+
+        let evaluateBlocks = { (blockLength: Int) -> [Double] in
+            guard valid.count >= blockLength else { return [] }
+            var candidateMeans: [Double] = []
+            var start = 0
+            while start + blockLength <= valid.count {
+                let slice = valid[start..<(start + blockLength)]
+                let count = Double(slice.count)
+                let mean = Double(slice.reduce(0, +)) / count
+                var varianceSum = 0.0
+                for v in slice {
+                    let diff = Double(v) - mean
+                    varianceSum += diff * diff
+                }
+                let sigma = (varianceSum / max(count - 1.0, 1.0)).squareRoot()
+                if sigma <= maxSigma {
+                    candidateMeans.append(mean)
+                }
+                start += stepLength
+            }
+            return candidateMeans
+        }
+
+        var qualifying = evaluateBlocks(primaryBlockLength)
+        if qualifying.isEmpty {
+            qualifying = evaluateBlocks(fallbackBlockLength)
+        }
+
+        if !qualifying.isEmpty {
+            qualifying.sort()
+            // Robust representative selection: guard against transient bradycardia or artifact dips
+            // by taking the median of the lowest quartile (bottom 25%) rather than the absolute minimum.
+            let quartileCount = max(1, qualifying.count / 4)
+            let lowestQuartile = Array(qualifying[0..<quartileCount])
+            let midIndex = lowestQuartile.count / 2
+            return lowestQuartile[midIndex]
+        }
+
+        // If no candidate block meets the strict stability threshold, fall back to the unweighted primary session mean
+        return Double(valid.reduce(0, +)) / Double(valid.count)
+    }
+
     /// The primary session's valid-sample count + duration, or `nil` in lockstep with `meanHR` (no session
     /// clears `minValidSamples`). Selection + gate mirror `meanHR` exactly.
     public static func coverage(sessions: [Session],

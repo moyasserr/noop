@@ -126,7 +126,10 @@ object RecoveryScorerTrace {
         // This is the RAW z, exactly as recovery() scores it: the parasympathetic-saturation easing is
         // detected and reported below but NOT applied, so the trace's HRV term matches the scored one.
         // NOTE: the HRV term is always terms[0]; the counterfactual below relies on that.
-        val hrvZRaw = RecoveryScorer.zScore(hrv, hrvBaseline.baseline, hrvBaseline.spread)
+        val hrvZRaw = RecoveryScorer.zScore(hrv, hrvBaseline.baseline, hrvBaseline.spread) ?: run {
+            lines.add("charge nilScore reason=hrvBaselineZeroVariance")
+            return null to lines
+        }
         val sat = RecoveryScorer.parasympatheticSaturation(hrvZ = hrvZRaw, rhrZ = rhrZForGuard)
         terms.add(hrvZRaw to RecoveryScorer.wHRV)
         lines.add("charge term hrv z=${r2(hrvZRaw)} w=${r2(RecoveryScorer.wHRV)} (higher HRV is better)")
@@ -140,10 +143,12 @@ object RecoveryScorerTrace {
         }
 
         // Resp term: lower is better, optional (needs BOTH the value and a baseline).
-        if (resp != null && respBaseline != null) {
-            val z = RecoveryScorer.zScore(respBaseline.baseline, resp, respBaseline.spread)
-            terms.add(z to RecoveryScorer.wResp)
-            lines.add("charge term resp z=${r2(z)} w=${r2(RecoveryScorer.wResp)} (lower resp is better)")
+        val respZ = if (resp != null && respBaseline != null) {
+            RecoveryScorer.zScore(respBaseline.baseline, resp, respBaseline.spread)
+        } else null
+        if (respZ != null) {
+            terms.add(respZ to RecoveryScorer.wResp)
+            lines.add("charge term resp z=${r2(respZ)} w=${r2(RecoveryScorer.wResp)} (lower resp is better)")
         } else {
             nilTerms.add("resp")
         }

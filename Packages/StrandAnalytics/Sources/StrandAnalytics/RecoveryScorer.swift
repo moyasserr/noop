@@ -185,11 +185,98 @@ public enum RecoveryScorer {
     ///     when there is no resting-HR baseline (no RHR term) — with nothing to corroborate the low
     ///     HRV, the guard refuses to guess and never fires.
     /// - Returns: whether the signature fired, plus the eased HRV z and damp fraction it would imply.
-    static func parasympatheticSaturation(hrvZ: Double, rhrZ: Double?) -> ParasympatheticSaturation {
-        // Without a resting-HR term there is nothing to corroborate the low HRV: benign saturation
+    /// Vagal (parasympathetic) saturation assessment.
+    /// Advisory / probabilistic model requiring longitudinal baseline context rather than acute easing.
+    public struct VagalSaturationAssessment: Equatable, Sendable {
+        /// Whether the candidate criteria for benign vagal saturation are met.
+        public let possibleVagalSaturation: Bool
+        /// Confidence level: "none", "low", "medium", or "high".
+        public let confidence: String
+        /// Physiological explanation distinguishing benign saturation from non-functional overreaching.
+        public let explanation: String
+        /// Decoupling magnitude between low HRV and low RHR in sigma units.
+        public let decouplingSigma: Double
+        public init(possibleVagalSaturation: Bool, confidence: String, explanation: String, decouplingSigma: Double) {
+            self.possibleVagalSaturation = possibleVagalSaturation
+            self.confidence = confidence
+            self.explanation = explanation
+            self.decouplingSigma = decouplingSigma
+        }
+    }
+
+    /// Evaluates candidate vagal saturation as a probabilistic, advisory assessment requiring
+    /// longitudinal baseline context (e.g. low resting HR baseline <= 55 bpm, high baseline HRV >= 50 ms, N >= 14)
+    /// to distinguish benign saturation in endurance athletes from parasympathetic overreaching.
+    /// Purely advisory; does NOT alter core recovery scoring.
+    /// Twin of Kotlin `RecoveryScorer.assessVagalSaturation`.
+    public static func assessVagalSaturation(
+        hrvZ: Double?,
+        rhrZ: Double?,
+        hrvBaseline: DriverBaseline?,
+        rhrBaseline: DriverBaseline?,
+        baselineNights: Int? = nil
+    ) -> VagalSaturationAssessment {
+        guard let hrvZ = hrvZ, let rhrZ = rhrZ, let hrvB = hrvBaseline, let rhrB = rhrBaseline else {
+            return VagalSaturationAssessment(
+                possibleVagalSaturation: false,
+                confidence: "none",
+                explanation: "Insufficient baseline or acute data to evaluate vagal saturation.",
+                decouplingSigma: 0.0
+            )
+        }
+        let hrvLow = -hrvZ
+        let rhrLow = rhrZ
+        guard hrvLow >= satEnterZ, rhrLow >= satEnterZ else {
+            return VagalSaturationAssessment(
+                possibleVagalSaturation: false,
+                confidence: "none",
+                explanation: "Normal autonomic coupling (no significant low-HRV / low-RHR decoupling).",
+                decouplingSigma: 0.0
+            )
+        }
+        let decoupling = min(hrvLow, rhrLow)
+        let nights = baselineNights ?? 14
+        let hasAerobicBaseline = (hrvB.mean >= 50.0) && (rhrB.mean <= 55.0)
+        let hasSufficientNights = nights >= 14
+
+        if hasAerobicBaseline && hasSufficientNights {
+            let conf = decoupling >= 1.5 ? "high" : "medium"
+            return VagalSaturationAssessment(
+                possibleVagalSaturation: true,
+                confidence: conf,
+                explanation: "Low HRV co-occurs with low resting HR against a high-parasympathetic baseline (RHR <= 55 bpm, HRV >= 50 ms). This pattern may represent benign vagal saturation rather than autonomic fatigue.",
+                decouplingSigma: decoupling
+            )
+        } else {
+            return VagalSaturationAssessment(
+                possibleVagalSaturation: false,
+                confidence: "low",
+                explanation: "Acute low-HRV / low-RHR decoupling detected, but longitudinal baseline (RHR=\(Int(rhrB.mean.rounded())) bpm, HRV=\(Int(hrvB.mean.rounded())) ms, N=\(nights)) does not meet aerobic saturation criteria. Low score preserved to guard against parasympathetic overreaching.",
+                decouplingSigma: decoupling
+            )
+        }
+    }
+
+    /// Detect parasympathetic saturation from tonight's HRV and resting-HR z-scores and compute the
+    /// easing that WOULD be applied to the low-HRV penalty (shrinking its negative z toward 0).
+    ///
+    /// This is pure detection + a counterfactual. It has no effect on Charge: `recovery(...)` scores
+    /// the raw HRV z regardless of what this returns. See the MARK header for the validation gap and
+    /// the contested premise that keep the easing switched off.
+    ///
+    /// - Parameters:
+    ///   - hrvZ: the HRV term as recovery() builds it, (hrv - mu)/sigma. Higher is better; a
+    ///     NEGATIVE value means HRV is below baseline (the penalty direction).
+    ///   - rhrZ: the resting-HR term as recovery() builds it, (mu - rhr)/sigma. Higher is better; a
+    ///     POSITIVE value means resting HR is below baseline (the recovery-good direction). Pass nil
+    ///     when there is no resting-HR baseline (no RHR term) — with nothing to corroborate the low
+    ///     HRV, the guard refuses to guess and never fires.
+    /// - Returns: whether the signature fired, plus the eased HRV z and damp fraction it would imply.
+    static func parasympatheticSaturation(hrvZ: Double?, rhrZ: Double?) -> ParasympatheticSaturation {
+        // Without both terms there is nothing to corroborate the low HRV: benign saturation
         // and real fatigue are indistinguishable from HRV alone, so report no saturation.
-        guard let rhrZ = rhrZ else {
-            return ParasympatheticSaturation(easedHrvZ: hrvZ, active: false, dampFraction: 0)
+        guard let hrvZ = hrvZ, let rhrZ = rhrZ else {
+            return ParasympatheticSaturation(easedHrvZ: hrvZ ?? 0.0, active: false, dampFraction: 0)
         }
         // Saturation SIGNATURE, in personal-sigma units:
         //   hrvLow  > 0  <=> HRV below baseline (the penalty we might ease)
@@ -274,8 +361,13 @@ public enum RecoveryScorer {
     }
 
     /// Robust z-score using EWMA spread: (value − mean) / (1.253 × spread).
-    static func zScore(_ value: Double, mean: Double, spread: Double) -> Double {
-        let sigma = max(1.253 * spread, 1e-9)
+    /// Guarded against near-zero variance using an epsilon spread (spread < 0.10 => nil)
+    /// rather than fabricating variability, avoiding division-by-near-zero explosion.
+    /// Twin of Kotlin `RecoveryScorer.zScore`.
+    static func zScore(_ value: Double, mean: Double, spread: Double, epsilonSpread: Double = 0.10) -> Double? {
+        guard !spread.isNaN, spread >= epsilonSpread else { return nil }
+        let sigma = 1.253 * spread
+        guard sigma >= 0.10 else { return nil }
         return (value - mean) / sigma
     }
 
@@ -324,39 +416,30 @@ public enum RecoveryScorer {
                                 hrvBaselineUsable: Bool = true,
                                 recoveryIndexSlope: Double? = nil,
                                 effortBaseline: DriverBaseline? = nil,
-                                priorDayEffort: Double? = nil,
-                                applyParasympatheticSaturation: Bool = true) -> Double? {
+                                priorDayEffort: Double? = nil) -> Double? {
         // Cold-start gate: HRV is the dominant driver; if its baseline isn't
         // usable, refuse to score (more honest than a fabricated value).
         if !hrvBaselineUsable { return nil }
-        // Required-driver gate: the HRV baseline is REQUIRED for a score. It is Optional here only
-        // for callers that may not have one yet, and hrvBaselineUsable defaults to true, so without
-        // this an absent baseline let any other optional term (sleepPerf alone, say) produce a
-        // Charge score carrying no HRV term at all.
+        // Required-driver gate: the HRV baseline is REQUIRED for a score.
         guard let hrvB = hrvBaseline else { return nil }
 
         var terms: [(z: Double, w: Double)] = []
 
         // HRV term: higher is better.
-        // When applyParasympatheticSaturation is enabled (default), protect against false fatigue
-        // penalties when very low resting HR corroborates vagal/parasympathetic saturation.
-        let rawHrvZ = zScore(hrv, mean: hrvB.mean, spread: hrvB.spread)
-        let rhrZForGuard: Double? = rhrBaseline.map { zScore($0.mean, mean: rhr, spread: $0.spread) }
-        let effectiveHrvZ: Double
-        if applyParasympatheticSaturation {
-            let sat = parasympatheticSaturation(hrvZ: rawHrvZ, rhrZ: rhrZForGuard)
-            effectiveHrvZ = sat.easedHrvZ
-        } else {
-            effectiveHrvZ = rawHrvZ
+        // Guarded against near-zero variance; if dominant driver has near-zero variance, refuse to score.
+        guard let rawHrvZ = zScore(hrv, mean: hrvB.mean, spread: hrvB.spread) else {
+            return nil
         }
-        terms.append((effectiveHrvZ, wHRV))
-        // RHR term: lower is better → (μ − x) / σ.
-        if let b = rhrBaseline {
-            terms.append((zScore(b.mean, mean: rhr, spread: b.spread), wRHR))
+        // Score remains conservative: raw HRV z is used directly without silent easing.
+        terms.append((rawHrvZ, wHRV))
+
+        // RHR term: lower is better → (μ − x) / σ. Guarded against near-zero variance.
+        if let b = rhrBaseline, let rhrZ = zScore(b.mean, mean: rhr, spread: b.spread) {
+            terms.append((rhrZ, wRHR))
         }
-        // Resp term: lower is better, optional.
-        if let r = resp, let b = respBaseline {
-            terms.append((zScore(b.mean, mean: r, spread: b.spread), wResp))
+        // Resp term: lower is better, optional. Guarded against near-zero variance.
+        if let r = resp, let b = respBaseline, let respZ = zScore(b.mean, mean: r, spread: b.spread) {
+            terms.append((respZ, wResp))
         }
         // Sleep-performance / Rest-quality term: no baseline needed; centered at SLEEP_PERF_CENTER.
         if let sp = sleepPerf {
@@ -376,8 +459,8 @@ public enum RecoveryScorer {
         // Activity-Balance / previous-day-Effort term: lower vs personal baseline is better,
         // same "lower is better" direction as RHR/resp → (μ − x) / σ. Needs BOTH the value
         // and a baseline, matching resp's pattern; added only when both are supplied.
-        if let e = priorDayEffort, let b = effortBaseline {
-            terms.append((zScore(b.mean, mean: e, spread: b.spread), wActivityBalance))
+        if let e = priorDayEffort, let b = effortBaseline, let effortZ = zScore(b.mean, mean: e, spread: b.spread) {
+            terms.append((effortZ, wActivityBalance))
         }
 
         guard !terms.isEmpty else { return nil }
@@ -409,18 +492,11 @@ public enum RecoveryScorer {
                                 skinTempDev: Double? = nil,
                                 recoveryIndexSlope: Double? = nil,
                                 effortBaseline: BaselineState? = nil,
-                                priorDayEffort: Double? = nil,
-                                applyParasympatheticSaturation: Bool = true) -> Double? {
+                                priorDayEffort: Double? = nil) -> Double? {
         recovery(hrv: hrv,
                  rhr: rhr,
                  resp: resp,
                  hrvBaseline: DriverBaseline(hrvBaseline),
-                 // #1988: an UNUSABLE resting-HR baseline is treated as absent. foldHistory returns
-                 // the config's synthetic midpoint (about 75 bpm) for an empty or all-implausible
-                 // history, which is nobody's resting HR, so scoring against it moved Charge on a
-                 // baseline the user never had. Gated here, in the one place every BaselineState
-                 // caller passes through, rather than at each call site: the headline and the driver
-                 // breakdown then agree by construction. Mirrors hrvBaselineUsable below.
                  rhrBaseline: rhrBaseline.flatMap { $0.usable ? $0 : nil }.map(DriverBaseline.init),
                  respBaseline: respBaseline.map(DriverBaseline.init),
                  sleepPerf: sleepPerf,
@@ -428,7 +504,7 @@ public enum RecoveryScorer {
                  hrvBaselineUsable: hrvBaseline.usable,
                  recoveryIndexSlope: recoveryIndexSlope,
                  effortBaseline: effortBaseline.map(DriverBaseline.init),
-                 priorDayEffort: priorDayEffort,
-                 applyParasympatheticSaturation: applyParasympatheticSaturation)
+                 priorDayEffort: priorDayEffort)
     }
 }
+

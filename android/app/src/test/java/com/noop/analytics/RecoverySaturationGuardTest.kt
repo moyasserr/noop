@@ -40,8 +40,8 @@ class RecoverySaturationGuardTest {
     /** The plain HRV+RHR composite with NO easing: the score pre-guard behaviour produces. Mirrors the Swift
      *  `undampedScore(hrv:rhr:hrvB:rhrB:)`. */
     private fun undampedScore(hrv: Double, rhr: Double, hrvB: BaselineState, rhrB: BaselineState): Double {
-        val hrvZ = RecoveryScorer.zScore(hrv, hrvB.baseline, hrvB.spread)
-        val rhrZ = RecoveryScorer.zScore(rhrB.baseline, rhr, rhrB.spread)
+        val hrvZ = RecoveryScorer.zScore(hrv, hrvB.baseline, hrvB.spread)!!
+        val rhrZ = RecoveryScorer.zScore(rhrB.baseline, rhr, rhrB.spread)!!
         val wsum = RecoveryScorer.wHRV + RecoveryScorer.wRHR
         val z = (RecoveryScorer.wHRV * hrvZ + RecoveryScorer.wRHR * rhrZ) / wsum
         return 100.0 / (1.0 + exp(-RecoveryScorer.logisticK * (z - RecoveryScorer.logisticZ0)))
@@ -204,7 +204,7 @@ class RecoverySaturationGuardTest {
         assertTrue(delta < 21.0)
 
         // ...and the HRV TERM in the trace is the RAW z, matching what was actually scored.
-        val hrvZRaw = RecoveryScorer.zScore(41.0, hrvB.baseline, hrvB.spread)
+        val hrvZRaw = RecoveryScorer.zScore(41.0, hrvB.baseline, hrvB.spread)!!
         val hrvTerm = satLines.first { it.startsWith("charge term hrv ") }
         assertTrue(
             "trace HRV term must be the raw scored z, not the eased one: $hrvTerm",
@@ -249,5 +249,26 @@ class RecoverySaturationGuardTest {
         assertEquals(ChargeDriverVerdict.BELOW_BASELINE_LIMITING, fatHRV.verdict)
         assertFalse(fatHRV.verdict == ChargeDriverVerdict.HRV_SATURATION_LIMITING)
         assertTrue(fatHRV.deltaPoints < 0)
+    }
+
+    @Test fun epsilonSpreadGuardsNearZeroVariance() {
+        val hrvB = BaselineState(baseline = 50.0, spread = 0.05, nValid = 14, nightsSinceUpdate = 0, status = BaselineStatus.TRUSTED)
+        val rhrB = baseline(mean = 55.0, sigma = 5.0)
+        assertNull(RecoveryScorer.recovery(hrv = 50.0, rhr = 55.0, resp = null, hrvBaseline = hrvB, rhrBaseline = rhrB, respBaseline = null, sleepPerf = null))
+        assertNull(RecoveryScorer.zScore(50.0, 50.0, 0.05))
+    }
+
+    @Test fun testAssessVagalSaturation() {
+        val hrvB = RecoveryScorer.DriverBaseline(mean = 65.0, spread = 6.0 / 1.253)
+        val rhrB = RecoveryScorer.DriverBaseline(mean = 48.0, spread = 4.0 / 1.253)
+        val assessment = RecoveryScorer.assessVagalSaturation(
+            hrvZ = -1.5,
+            rhrZ = 1.5,
+            hrvBaseline = hrvB,
+            rhrBaseline = rhrB,
+            baselineNights = 20,
+        )
+        assertTrue(assessment.possibleVagalSaturation)
+        assertEquals("high", assessment.confidence)
     }
 }
