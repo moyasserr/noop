@@ -3337,7 +3337,9 @@ object SleepStager {
             // spurious successive difference, which is the exact spike the rejection above is meant to
             // remove. See HrvAnalyzer.rmssdGapAware.
             val cleaned = HrvAnalyzer.cleanRRGapAware(bucket)
-            val rmssd = if (cleaned.nn.size >= 2) HrvAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) else null
+            // Baek (2015) reliability floor: require at least 20 clean beats in a 5-min window
+            // to compute RMSSD, eliminating artifact-inflated spikes from sparse/jittery windows.
+            val rmssd = if (cleaned.nn.size >= 20) HrvAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) else null
             val center = t + windowS / 2
             val stage = stages.firstOrNull { center >= it.start && center < it.end }?.stage ?: "?"
             out.add(HrvWindow(startTs = t, stage = stage, cleanBeats = cleaned.nn.size, rmssd = rmssd))

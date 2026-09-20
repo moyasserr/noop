@@ -63,10 +63,12 @@ object RecoveryScorer {
     // Constants (recovery.py)
     // ─────────────────────────────────────────────────────────────────────────
 
-    const val wHRV: Double = 0.55
+    // Calibrated recovery weights (RR-OPTIMIZATION.md): wSleep increased 0.15 -> 0.25,
+    // wHRV rebalanced 0.55 -> 0.45, reflecting sleep performance as the primary recovery driver.
+    const val wHRV: Double = 0.45
     const val wRHR: Double = 0.20
     const val wResp: Double = 0.05
-    const val wSleep: Double = 0.15
+    const val wSleep: Double = 0.25
 
     /** Skin-temperature deviation weight (symmetric illness/overreach penalty). */
     const val wSkinTemp: Double = 0.05

@@ -50,12 +50,12 @@ public enum RecoveryScorer {
 
     // MARK: - Constants (recovery.py)
 
-    public static let wHRV: Double = 0.55
+    // Calibrated recovery weights (RR-OPTIMIZATION.md): wSleep increased 0.15 -> 0.25,
+    // wHRV rebalanced 0.55 -> 0.45, reflecting sleep performance as the primary recovery driver.
+    public static let wHRV: Double = 0.45
     public static let wRHR: Double = 0.20
     public static let wResp: Double = 0.05
-    public static let wSleep: Double = 0.15
-    /// Skin-temperature deviation weight (Charge/Effort/Rest redesign). HRV gave up
-    /// 0.05 (0.60 → 0.55) to fund it.
+    public static let wSleep: Double = 0.25
     public static let wSkinTemp: Double = 0.05
 
     /// Skin-temp penalty scale (°C): a 1 °C deviation from baseline costs ≈1 z-unit of
