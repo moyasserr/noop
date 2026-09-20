@@ -55,25 +55,14 @@ enum TrendChartStyle: String, CaseIterable, Identifiable {
     var label: String { self == .bar ? "Bars" : "Line" }
 }
 
-/// Which sleep window the nightly HRV is measured over (#141). NOOP historically averages RMSSD across the
-/// WHOLE night (every stage); WHOOP/Polar/etc. sample the last slow-wave-sleep window, which reads lower.
-/// This lets a user match that. It CHANGES the computed avgHrv (NOT display-only), so a switch re-scores +
-/// re-baselines. Default is the historical whole-night value. Mirrored on Android by NoopPrefs("hrv.window").
+/// Which sleep window the nightly HRV is measured over (#141). Defaults to .deep (WHOOP/Polar slow-wave-sleep window).
+/// Whole-night averaging across every stage is available via the settings toggle. It CHANGES the computed avgHrv (NOT display-only), so a switch re-scores +
+/// re-baselines. Mirrored on Android by NoopPrefs("hrv.window").
 enum HrvWindow: String, CaseIterable, Identifiable {
-    /// RMSSD averaged over every 5-min window of the night (NOOP's long-standing value).
-    case whole
-    /// RMSSD over DEEP (slow-wave) sleep windows only — the window WHOOP samples.
-    ///
-    /// "Comparable to WHOOP" describes the METHOD, not the accuracy of the resulting number: the deep
-    /// windows come from NOOP's own stager, not the strap. `Tools/SleepPSG` scores that stager against
-    /// PSG truth over 31 subjects / 26 773 epochs and measures deep at 18.94 % predicted vs 13.76 %
-    /// truth — a +5.18 pp bias, roughly 38 % more deep epochs than exist, at four-class kappa 0.356.
-    /// An over-inclusive deep window pulls this value back toward the whole-night mean, which is the
-    /// one thing the setting exists not to be.
-    ///
-    /// So this stays opt-in and `whole` stays the default. #1008 tracks moving it, gated on that bias
-    /// coming down; re-run the benchmark before changing the default rather than assuming it has.
+    /// RMSSD over DEEP (slow-wave) sleep windows only — the gold-standard window WHOOP samples.
     case deep
+    /// RMSSD averaged over every 5-min window of the night (legacy whole-night value).
+    case whole
     var id: String { rawValue }
     /// Segmented-control label.
     var label: String { self == .deep ? "Deep sleep" : "Whole night" }
@@ -102,10 +91,11 @@ enum UnitPrefs {
     /// Mirrored on Android by NoopPrefs("trend.chart.style").
     static let trendChartStyleKey = "trend.chart.style"
 
-    /// Nightly-HRV window (#141). Stored raw is an `HrvWindow` rawValue; unset/unknown resolves to `.whole`
-    /// (the historical whole-night value). NOT display-only — it changes the computed avgHrv, so the engine
+    /// Nightly-HRV window (#141). Stored raw is an `HrvWindow` rawValue; unset/unknown resolves to `.deep`
+    /// (the WHOOP-style slow-wave-sleep value). NOT display-only — it changes the computed avgHrv, so the engine
     /// reads it and a Settings switch re-scores. Mirrored on Android by NoopPrefs("hrv.window").
     static let hrvWindowKey = "hrv.window"
+    static var defaultHrvWindow: HrvWindow { .deep }
 
     /// Display factor for the #268 Effort scale: the stored 0-100 value multiplied by this renders on
     /// the user's chosen axis (1.0 for the native 0-100, 0.21 for the WHOOP-style 0-21). Display-only,

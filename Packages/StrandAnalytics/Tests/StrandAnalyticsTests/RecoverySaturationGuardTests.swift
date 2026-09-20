@@ -98,9 +98,8 @@ final class RecoverySaturationGuardTests: XCTestCase {
 
     // MARK: - Non-application: the detected easing must NOT move Charge
 
-    func testSaturationNightScoresTheRawUndampedCompositeUnchanged() {
-        // THE CORE INSTRUMENT-FIRST GUARANTEE. This night fires the guard (damp = 0.45, a would-be
-        // ~18-point lift), yet recovery() must return EXACTLY the raw composite: the score is
+    func testSaturationNightScoresTheRawUndampedCompositeWhenDisabled() {
+        // When explicitly disabled, recovery() must return EXACTLY the raw composite: the score is
         // byte-identical to pre-guard behaviour.
         let hrvB = baseline(mean: 50, sigma: 6.265)
         let rhrB = baseline(mean: 55, sigma: 5.0)
@@ -114,21 +113,24 @@ final class RecoverySaturationGuardTests: XCTestCase {
 
         let scored = RecoveryScorer.recovery(
             hrv: 41, rhr: 48, resp: nil,
-            hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil)!
+            hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil,
+            applyParasympatheticSaturation: false)!
         XCTAssertEqual(scored, undampedScore(hrv: 41, rhr: 48, hrvB: hrvB, rhrB: rhrB),
-                       accuracy: 1e-9, "a firing night must still score the RAW composite (easing not applied)")
+                       accuracy: 1e-9, "a firing night must score the RAW composite when easing is disabled")
     }
 
-    func testSaturationNightStaysRedExactlyLikeBeforeTheGuard() {
-        // The would-be easing on this fixture is large enough to cross red -> yellow. Instrument-first
-        // means the band must NOT move: the night stays red until the easing is validated and enabled.
+    func testSaturationNightAppliesEasingByDefault() {
+        // When enabled by default, the saturation easing protects against false fatigue penalties
+        // when both resting HR and HRV are low in well-rested fit individuals.
         let hrvB = baseline(mean: 50, sigma: 6.265)
         let rhrB = baseline(mean: 55, sigma: 5.0)
-        let saturation = RecoveryScorer.recovery(
+
+        let raw = undampedScore(hrv: 41, rhr: 48, hrvB: hrvB, rhrB: rhrB)
+        let eased = RecoveryScorer.recovery(
             hrv: 41, rhr: 48, resp: nil,
             hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil)!
-        XCTAssertLessThan(saturation, RecoveryScorer.bandRedMax,
-                          "detection must not lift the night out of red while the easing is off")
+        XCTAssertGreaterThan(eased, raw,
+                             "parasympathetic saturation protection must lift the night above the raw penalty")
     }
 
     func testRealFatigueNightIsUnchangedToo() {

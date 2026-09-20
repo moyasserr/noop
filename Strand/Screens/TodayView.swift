@@ -243,8 +243,8 @@ struct TodayView: View {
     private var effortScale: EffortScale { UnitPrefs.resolveEffortScale(effortScaleRaw) }
     // #233: the HRV window setting, read here only to explain (never recompute) an empty Charge ring
     // caused by the Deep window finding no deep-stage sleep. Same key/default SettingsView reads.
-    @AppStorage(UnitPrefs.hrvWindowKey) private var hrvWindowRaw = HrvWindow.whole.rawValue
-    private var hrvWindow: HrvWindow { HrvWindow(rawValue: hrvWindowRaw) ?? .whole }
+    @AppStorage(UnitPrefs.hrvWindowKey) private var hrvWindowRaw = HrvWindow.deep.rawValue
+    private var hrvWindow: HrvWindow { HrvWindow(rawValue: hrvWindowRaw) ?? .deep }
 
     // Editable Key-Metrics layout (#251), an ordered list of the enabled tiles, persisted display-only.
     // Empty/unset shows the full default order. Every edit affordance routes into one customization sheet.

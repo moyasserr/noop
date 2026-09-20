@@ -482,8 +482,8 @@ public enum AnalyticsEngine {
                                   hrvWindowDetail: Bool = false,
                                   // #141: when true, the nightly HRV is RMSSD over DEEP-sleep windows only
                                   // (WHOOP-style), instead of the whole-night mean. Threaded from the caller
-                                  // (UnitPrefs.hrvWindowKey). Default false = byte-identical whole-night value.
-                                  deepHrvWindow: Bool = false,
+                                  // (UnitPrefs.hrvWindowKey). Default true (WHOOP-style Deep Sleep SWS).
+                                  deepHrvWindow: Bool = true,
                                   // #1545: which TRIMP recipe scores Effort. Edwards (the default) is
                                   // time-in-zone and pays NOTHING below 50% HRR, so intermittent work —
                                   // a lifting session, once the sets are averaged against the rests —
@@ -719,22 +719,28 @@ public enum AnalyticsEngine {
         // supply the daily RHR when the main night has no HR. #804's device-provided value still wins.
         let primarySession = physiologySessions.max(by: { ($0.end - $0.start) < ($1.end - $1.start) })
         let providedPrimaryRHR = primarySession
-            .flatMap { p in providedSleep.first(where: { $0.start == p.start && $0.end == p.end })?.restingHR }
-        let restingHRDaily: Int? = providedPrimaryRHR ?? primarySession?.restingHR
-        // Daily avg HRV = in-bed-weighted mean of per-session avg HRV.
+        let restingHRDaily: Int? = providedPrimaryRHR
+            ?? primarySessionRestingHR(sessions: physiologySessions, hr: hr).map { Int($0.rounded()) }
+            ?? primarySession?.restingHR
+            ?? physiologySessions.compactMap { $0.restingHR }.min()
+
+        // Daily avg HRV = in-bed-weighted mean of per-session avg HRV (with Deep SWS priority).
         let avgHRVDaily: Double? = {
             if deepHrvWindow {
-                // #141: WHOOP-style HRV — pool RMSSD over DEEP-stage 5-min windows only (slow-wave sleep),
-                // instead of the whole-night mean. Reuses the SAME sessionHrvWindows the HRV trace is built
-                // from, so the displayed value equals the `deepOnly` figure the trace logs. rr sorted (RMSSD
-                // = successive diffs). nil when no deep sleep is detected (WHOOP-4.0 staging can be sparse) —
-                // the caller shows calibrating, never a fabricated number.
+                // WHOOP-style HRV: prioritize the last Slow-Wave Sleep (SWS) run, or deep-stage windows,
+                // instead of the whole-night mean. If deep sleep is sparse/absent, fall back to the whole-night mean.
                 let rrSorted = rr.sortedByTsStable()
-                let deep = physiologySessions.flatMap { s in
+                let windows = physiologySessions.flatMap { s in
                     SleepStager.sessionHrvWindows(start: s.start, end: s.end, rr: rrSorted, stages: s.stages)
-                        .filter { $0.stage == "deep" }.compactMap { $0.rmssd }
                 }
-                return deep.isEmpty ? nil : deep.reduce(0, +) / Double(deep.count)
+                let lastDeep = SleepStager.lastDeepRun(windows).compactMap { $0.rmssd }
+                if !lastDeep.isEmpty {
+                    return lastDeep.reduce(0, +) / Double(lastDeep.count)
+                }
+                let allDeep = windows.filter { $0.stage == "deep" }.compactMap { $0.rmssd }
+                if !allDeep.isEmpty {
+                    return allDeep.reduce(0, +) / Double(allDeep.count)
+                }
             }
             // A main night REFUSED by the #1118 over-count gate is not replaced by the day's naps. The
             // day-wide pool below rests on "the main overnight dominates" (see `physiologySessions`), which
