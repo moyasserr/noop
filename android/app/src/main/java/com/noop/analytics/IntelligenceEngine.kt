@@ -142,6 +142,7 @@ object IntelligenceEngine {
          *  inside `analyzeRecentOnCpu` stays one statement — that method is close to the JVM's 64 KB
          *  bytecode ceiling (#1524). */
         val traces: DayTraces = DayTraces(),
+        val sleepHrFloor: Int? = null,
     )
 
     /**
@@ -749,6 +750,8 @@ object IntelligenceEngine {
         val primarySessionRHRByDay = LinkedHashMap<String, Double>()
         // #1169: its coverage inputs (valid-sample count + primary-session duration), same lifetime as the mean.
         val primarySessionRHRCoverageByDay = LinkedHashMap<String, PrimarySessionRestingHR.Coverage>()
+        // #1169: lowest 5-min sustained sleep HR floor per day.
+        val sleepHrFloorByDay = LinkedHashMap<String, Int>()
 
         // In-memory nightly values harvested in pass 1, used to seed the pass-2 baseline.
         // Keyed by day so the union with imported history de-dupes cleanly per UTC day.
@@ -977,6 +980,7 @@ object IntelligenceEngine {
                     cached.spo2Candidate?.let { spo2CandidateByDay[day] = it }
                     cached.primaryRhr?.let { primarySessionRHRByDay[day] = it }
                     cached.primaryRhrCoverage?.let { primarySessionRHRCoverageByDay[day] = it }
+                    cached.sleepHrFloor?.let { sleepHrFloorByDay[day] = it }
                     scoredNights.add(cached.res)
                     resolvedScoreOwnerByDay[day] = cached.owner
                     for (line in cached.diagLines) diag(line)
@@ -1417,9 +1421,25 @@ object IntelligenceEngine {
             // comparison the issue asks for accrues on real devices. NEVER shown and NEVER fed to any score;
             // #1174's definition is unchanged. The windowing + delegation lives in the byte-identical,
             // tested AnalyticsEngine.
-            val (primaryRhr, primaryRhrCoverage) = AnalyticsEngine.primarySessionRestingHRWithCoverage(res.sleepSessions, hr)
+            // #1169: resolve any user-edited sleep sessions for this window so the primary session RHR
+            // describes the user's corrected window rather than stale pre-edited detector bounds.
+            val storedForDay = repo.sleepSessionsForDevice(owner, from, to, 4000).filter { it.userEdited }
+            val scoringSessions = if (storedForDay.isEmpty()) res.sleepSessions else {
+                res.sleepSessions.map { s ->
+                    val edit = storedForDay.firstOrNull { it.startTs == s.start || (it.startTs < s.end && it.endTs > s.start) }
+                    if (edit != null) {
+                        val start = if (edit.startTsAdjusted != 0L) edit.startTsAdjusted else edit.startTs
+                        s.copy(start = start, end = edit.endTs)
+                    } else {
+                        s
+                    }
+                }
+            }
+            val (primaryRhr, primaryRhrCoverage) = AnalyticsEngine.primarySessionRestingHRWithCoverage(scoringSessions, hr)
             primaryRhr?.let { primarySessionRHRByDay[res.daily.day] = it }
             primaryRhrCoverage?.let { primarySessionRHRCoverageByDay[res.daily.day] = it }
+            val sleepFloor = res.sleepSessions.mapNotNull { it.restingHR }.minOrNull()
+            sleepFloor?.let { sleepHrFloorByDay[res.daily.day] = it }
             scoredNights.add(res)
             resolvedScoreOwnerByDay[res.daily.day] = owner
             // #1005: cache this freshly-scored night under its per-day key (only when it was cache-eligible
@@ -1438,6 +1458,7 @@ object IntelligenceEngine {
                     spo2Candidate = spo2CandidateByDay[day], hrvOverCount = hrvOverCountByDay[day],
                     diagLines = dayDiagLines.toList(),
                     traces = dayTraces,
+                    sleepHrFloor = sleepFloor,
                 )
                 dayCacheCacheable++
             }
@@ -1691,6 +1712,9 @@ object IntelligenceEngine {
             primarySessionRHRCoverageByDay[daily.day]?.let { cov ->
                 restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "rhr_primary_session_valid_samples", value = cov.validSamples.toDouble()))
                 restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "rhr_primary_session_duration_s", value = cov.durationSec))
+            }
+            sleepHrFloorByDay[daily.day]?.let { floor ->
+                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "sleep_hr_floor", value = floor.toDouble()))
             }
 
             out.add(

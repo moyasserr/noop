@@ -248,6 +248,8 @@ final class IntelligenceEngine: ObservableObject {
         /// written as "rhr_primary_session_valid_samples" / "rhr_primary_session_duration_s" in pass 2. nil
         /// in lockstep with `primarySessionRHR`.
         let primarySessionRHRCoverage: PrimarySessionRestingHR.Coverage?
+        /// #1169 diagnostic metric: lowest 5-min sustained sleep HR floor across sessions.
+        let sleepHrFloor: Int?
     }
 
     /// Exact pre-upgrade R-R-derived cells retained only while an unlabelled WHOOP 5 window is withheld.
@@ -1692,8 +1694,24 @@ final class IntelligenceEngine: ObservableObject {
                 // comparison the issue asks for accrues on real devices. NEVER shown and NEVER fed to any
                 // score; #1174's definition is unchanged — this only records its per-night output. The
                 // windowing + delegation lives in the byte-identical, tested `AnalyticsEngine`.
+                // #1169: resolve any user-edited sleep sessions for this window so the primary session RHR
+                // describes the user's corrected window rather than stale pre-edited detector bounds.
+                let storedForDay = (try? await store.sleepSessions(deviceId: owner, from: from, to: to, limit: 4000))?.filter { $0.userEdited } ?? []
+                let scoringSessions: [SleepSession]
+                if !storedForDay.isEmpty {
+                    scoringSessions = res.sleepSessions.map { s in
+                        if let edit = storedForDay.first(where: { $0.startTs == s.start || ($0.startTs < s.end && $0.endTs > s.start) }) {
+                            let start = edit.startTsAdjusted != 0 ? edit.startTsAdjusted : edit.startTs
+                            return SleepSession(start: start, end: edit.endTs, efficiency: s.efficiency, stages: s.stages, restingHR: s.restingHR, avgHRV: s.avgHRV)
+                        }
+                        return s
+                    }
+                } else {
+                    scoringSessions = res.sleepSessions
+                }
                 let (primarySessionRHR, primarySessionRHRCoverage) =
-                    AnalyticsEngine.primarySessionRestingHRWithCoverage(sessions: res.sleepSessions, hr: hr)
+                    AnalyticsEngine.primarySessionRestingHRWithCoverage(sessions: scoringSessions, hr: hr)
+                let sleepHrFloor = res.sleepSessions.compactMap({ $0.restingHR }).min()
                 let scan = DayScan(result: res, rhrLine: rhrLine, rhrBinLine: rhrBinLine,
                                    respLine: respLine,
                                    readOwner: owner, hrRows: hr.count,
@@ -1702,7 +1720,8 @@ final class IntelligenceEngine: ObservableObject {
                                    spo2Candidate: spo2CandidateMean,
                                    hrvOverCounted: hrvOverCounted,
                                    primarySessionRHR: primarySessionRHR,
-                                   primarySessionRHRCoverage: primarySessionRHRCoverage)
+                                   primarySessionRHRCoverage: primarySessionRHRCoverage,
+                                   sleepHrFloor: sleepHrFloor)
                 // #1005: cache this freshly-scored scan under its per-day key (only when the day was
                 // cache-eligible this pass, i.e. a registered WHOOP owner with no trace active). Reused
                 // days `continue`d above and never reach here, so the cache only ever holds fresh scans.
@@ -1794,6 +1813,8 @@ final class IntelligenceEngine: ObservableObject {
         var primarySessionRHRByDay: [String: Double] = [:]
         // #1169: its coverage inputs (valid-sample count + primary-session duration), same lifetime as the mean.
         var primarySessionRHRCoverageByDay: [String: PrimarySessionRestingHR.Coverage] = [:]
+        // #1169: lowest 5-min sustained sleep HR floor per day.
+        var sleepHrFloorByDay: [String: Int] = [:]
 
         // Back on the main actor: fold the off-actor results into the pass-2 state in the SAME order the
         // loop produced them. Pure assignment / appends , no further store reads , so this is cheap and the
@@ -1821,6 +1842,9 @@ final class IntelligenceEngine: ObservableObject {
             }
             if let cov = scan.primarySessionRHRCoverage {
                 primarySessionRHRCoverageByDay[res.daily.day] = cov
+            }
+            if let f = scan.sleepHrFloor {
+                sleepHrFloorByDay[res.daily.day] = f
             }
             if let line = scan.rhrLine { diagnosticSink?(line, nil) }
             if let line = scan.rhrBinLine { diagnosticSink?(line, nil) }
@@ -2208,6 +2232,9 @@ final class IntelligenceEngine: ObservableObject {
             if let cov = primarySessionRHRCoverageByDay[daily.day] {
                 restPoints.append(MetricPoint(day: daily.day, key: "rhr_primary_session_valid_samples", value: Double(cov.validSamples)))
                 restPoints.append(MetricPoint(day: daily.day, key: "rhr_primary_session_duration_s", value: cov.durationSec))
+            }
+            if let f = sleepHrFloorByDay[daily.day] {
+                restPoints.append(MetricPoint(day: daily.day, key: "sleep_hr_floor", value: Double(f)))
             }
             cachedSleep.append(contentsOf: night.cachedSleep)
             // Keep the analytics detector as an enrichment input for real imported/manual workouts, but do

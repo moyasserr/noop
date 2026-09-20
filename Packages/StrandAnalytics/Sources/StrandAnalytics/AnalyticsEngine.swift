@@ -1421,14 +1421,38 @@ public enum AnalyticsEngine {
                                          validBpm: validBpm, minValidSamples: minValidSamples)
     }
 
-    /// Window `hr` to each session's `[start, end)` once — the shared input BOTH the #1169 mean and its coverage
-    /// average over. Extracted so a caller that needs both windows the samples a SINGLE time (this is O(sessions
-    /// × hr); doing it once per metric is pure duplicate work). Twin of the Kotlin `primarySessions`.
+    /// Window `hr` to each session's `[start, end)` once — filtering to asleep-only epochs when stages
+    /// are present to isolate sleeping resting heart rate from awake pre-sleep or morning in-bed time.
+    /// Twin of the Kotlin `primarySessions`.
     private static func primarySessions(sessions: [SleepSession], hr: [HRSample]) -> [PrimarySessionRestingHR.Session] {
         sessions.map { s in
-            PrimarySessionRestingHR.Session(
-                durationSec: Double(s.end - s.start),
-                bpm: hr.filter { $0.ts >= s.start && $0.ts < s.end }.map { $0.bpm })
+            let sessionHr: [HRSample]
+            let duration: Double
+            if !s.stages.isEmpty {
+                let asleepSegments = s.stages.filter { $0.stage != "wake" && $0.end > $0.start }
+                if !asleepSegments.isEmpty {
+                    let asleepSamples = hr.filter { sample in
+                        sample.ts >= s.start && sample.ts < s.end &&
+                        asleepSegments.contains { seg in sample.ts >= seg.start && sample.ts < seg.end }
+                    }
+                    if !asleepSamples.isEmpty {
+                        sessionHr = asleepSamples
+                        duration = Double(asleepSegments.reduce(0) { $0 + ($1.end - $1.start) })
+                    } else {
+                        sessionHr = hr.filter { $0.ts >= s.start && $0.ts < s.end }
+                        duration = Double(s.end - s.start)
+                    }
+                } else {
+                    sessionHr = hr.filter { $0.ts >= s.start && $0.ts < s.end }
+                    duration = Double(s.end - s.start)
+                }
+            } else {
+                sessionHr = hr.filter { $0.ts >= s.start && $0.ts < s.end }
+                duration = Double(s.end - s.start)
+            }
+            return PrimarySessionRestingHR.Session(
+                durationSec: duration,
+                bpm: sessionHr.map { $0.bpm })
         }
     }
 

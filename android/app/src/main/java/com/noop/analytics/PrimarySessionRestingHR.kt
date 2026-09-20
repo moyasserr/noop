@@ -40,16 +40,24 @@ object PrimarySessionRestingHR {
     /** Provisional minimum valid-sample coverage before a value is returned. A sample count is cadence-blind;
      *  the exact rule is a tuning parameter for the multi-participant validation the issue calls for. */
     const val DEFAULT_MIN_VALID_SAMPLES = 30
+    /** Minimum covered duration in seconds (20 minutes) to eliminate cadence-blind brief reconnect bursts. */
+    const val DEFAULT_MIN_DURATION_SEC: Double = 1200.0
 
-    /** Mean valid HR of the LONGEST session, or null when no session clears [minValidSamples] valid samples. */
+    /**
+     * Mean valid HR of the LONGEST session, or null when no session clears [minValidSamples] valid samples
+     * and [minDurationSec] coverage.
+     * Twin of Swift `PrimarySessionRestingHR.meanHR`.
+     */
     fun meanHR(
         sessions: List<Session>,
         validBpm: IntRange = DEFAULT_VALID_BPM,
         minValidSamples: Int = DEFAULT_MIN_VALID_SAMPLES,
+        minDurationSec: Double = 0.0,
     ): Double? {
         // Primary = longest by duration. `maxByOrNull` keeps the FIRST of equal-duration sessions (only a
         // strictly-longer one replaces it); Swift `max(by:)` resolves ties the same way, so parity holds.
         val primary = sessions.maxByOrNull { it.durationSec } ?: return null
+        if (primary.durationSec < minDurationSec) return null
         val valid = primary.bpm.filter { it in validBpm }
         if (valid.size < minValidSamples) return null
         return valid.sum().toDouble() / valid.size
@@ -129,12 +137,18 @@ object PrimarySessionRestingHR {
      *  Swift `PrimarySessionRestingHR.Coverage` / `coverage`. */
     data class Coverage(val validSamples: Int, val durationSec: Double)
 
+    /**
+     * The primary session's valid-sample count + duration, or null in lockstep with [meanHR].
+     * Twin of Swift `PrimarySessionRestingHR.coverage`.
+     */
     fun coverage(
         sessions: List<Session>,
         validBpm: IntRange = DEFAULT_VALID_BPM,
         minValidSamples: Int = DEFAULT_MIN_VALID_SAMPLES,
+        minDurationSec: Double = 0.0,
     ): Coverage? {
         val primary = sessions.maxByOrNull { it.durationSec } ?: return null
+        if (primary.durationSec < minDurationSec) return null
         val valid = primary.bpm.filter { it in validBpm }
         if (valid.size < minValidSamples) return null
         return Coverage(validSamples = valid.size, durationSec = primary.durationSec)

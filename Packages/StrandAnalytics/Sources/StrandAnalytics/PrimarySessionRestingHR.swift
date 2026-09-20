@@ -47,14 +47,20 @@ public enum PrimarySessionRestingHR {
     /// Provisional minimum valid-sample coverage before a value is returned. A sample count is cadence-blind;
     /// the exact rule is a tuning parameter for the multi-participant validation the issue calls for.
     public static let defaultMinValidSamples = 30
+    /// Minimum covered duration in seconds (20 minutes) to eliminate cadence-blind brief reconnect bursts.
+    public static let defaultMinDurationSec: Double = 1200.0
 
-    /// Mean valid HR of the LONGEST session, or `nil` when no session clears `minValidSamples` valid samples.
+    /// Mean valid HR of the LONGEST session, or `nil` when no session clears `minValidSamples` valid samples
+    /// and `minDurationSec` coverage.
+    /// Twin of Kotlin `PrimarySessionRestingHR.meanHR`.
     public static func meanHR(sessions: [Session],
                               validBpm: ClosedRange<Int> = defaultValidBpm,
-                              minValidSamples: Int = defaultMinValidSamples) -> Double? {
+                              minValidSamples: Int = defaultMinValidSamples,
+                              minDurationSec: Double = 0.0) -> Double? {
         // Primary = longest by duration. `max(by:)` keeps the FIRST of equal-duration sessions (only a
         // strictly-longer one replaces it); Kotlin `maxByOrNull` resolves ties the same way, so parity holds.
         guard let primary = sessions.max(by: { $0.durationSec < $1.durationSec }) else { return nil }
+        guard primary.durationSec >= minDurationSec else { return nil }
         let valid = primary.bpm.filter { validBpm.contains($0) }
         guard valid.count >= minValidSamples else { return nil }
         return Double(valid.reduce(0, +)) / Double(valid.count)
@@ -144,11 +150,14 @@ public enum PrimarySessionRestingHR {
     }
 
     /// The primary session's valid-sample count + duration, or `nil` in lockstep with `meanHR` (no session
-    /// clears `minValidSamples`). Selection + gate mirror `meanHR` exactly.
+    /// clears `minValidSamples` and `minDurationSec`). Selection + gate mirror `meanHR` exactly.
+    /// Twin of Kotlin `PrimarySessionRestingHR.coverage`.
     public static func coverage(sessions: [Session],
                                 validBpm: ClosedRange<Int> = defaultValidBpm,
-                                minValidSamples: Int = defaultMinValidSamples) -> Coverage? {
+                                minValidSamples: Int = defaultMinValidSamples,
+                                minDurationSec: Double = 0.0) -> Coverage? {
         guard let primary = sessions.max(by: { $0.durationSec < $1.durationSec }) else { return nil }
+        guard primary.durationSec >= minDurationSec else { return nil }
         let valid = primary.bpm.filter { validBpm.contains($0) }
         guard valid.count >= minValidSamples else { return nil }
         return Coverage(validSamples: valid.count, durationSec: primary.durationSec)
