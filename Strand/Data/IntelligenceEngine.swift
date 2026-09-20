@@ -920,9 +920,8 @@ final class IntelligenceEngine: ObservableObject {
         // nightly per-window RMSSD (by stage) + the whole-night/deep-only/last-SWS summary, replayed below
         // tagged `.hrv`. When false (the default), no HRV trace is built and analyzeDay's path is unchanged.
         let hrvTraceActive = TestCentre.active(.hrv)
-        // HRV window (#141): read ONCE. When the user picked WHOOP-style, the nightly HRV is RMSSD over deep
-        // sleep only; default whole-night otherwise. Captured into the detached loop, threaded to analyzeDay.
-        let deepHrvWindow = UserDefaults.standard.string(forKey: UnitPrefs.hrvWindowKey) == HrvWindow.deep.rawValue
+        // HRV window (#141): read ONCE. Default is WHOOP-style deep sleep (.deep), or whole-night if chosen.
+        let deepHrvWindow = (UserDefaults.standard.string(forKey: UnitPrefs.hrvWindowKey) ?? HrvWindow.deep.rawValue) == HrvWindow.deep.rawValue
         // Steps test mode: read the zero-cost gate ONCE here (a single Bool) and capture it into the detached
         // loop. When false (the default), no raw-counter trace is built per day. When true, each day collects
         // the 5/MG cumulative @57 series + wrap-aware deltas + dropped deltas, replayed below tagged `.steps`.

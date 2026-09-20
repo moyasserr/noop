@@ -98,15 +98,19 @@ extension RecoveryScorer {
         let rhrZForGuard: Double? = rhrB.map { zScore($0.baseline, mean: rhr, spread: $0.spread) }
 
         // HRV term: higher is better. (Always present once usable; the cold-start guard above returned.)
-        // This is the RAW z, exactly as recovery() scores it: the parasympathetic-saturation easing is
-        // detected and reported below but NOT applied, so the trace's HRV term matches the scored one.
+        // Parasympathetic-saturation easing is applied when active to prevent false fatigue penalties.
         // L9: every WEIGHT / SCALE / centre constant goes through r2() too (not just the z-scores), so a
         // future non-round weight (e.g. 0.333) renders identically on Swift and Kotlin and the parity
         // fixture cannot silently desync. The values render the same as before today.
         let hrvZRaw = zScore(hrv, mean: hrvBaseline.baseline, spread: hrvBaseline.spread)
         let sat = parasympatheticSaturation(hrvZ: hrvZRaw, rhrZ: rhrZForGuard)
-        terms.append(("hrv", hrvZRaw, wHRV))
-        lines.append("charge term hrv z=\(r2(hrvZRaw)) w=\(r2(wHRV)) (higher HRV is better)")
+        let effectiveHrvZ = sat.easedHrvZ
+        terms.append(("hrv", effectiveHrvZ, wHRV))
+        if sat.active {
+            lines.append("charge term hrv z=\(r2(effectiveHrvZ)) w=\(r2(wHRV)) (parasympathetic saturation protected, raw z=\(r2(hrvZRaw)))")
+        } else {
+            lines.append("charge term hrv z=\(r2(effectiveHrvZ)) w=\(r2(wHRV)) (higher HRV is better)")
+        }
 
         // RHR term: lower is better -> (mu - x) / sigma. (Reuses the z computed for the guard.)
         if let z = rhrZForGuard {
@@ -180,10 +184,9 @@ extension RecoveryScorer {
             let easedZ = terms.reduce(0) { $0 + ($1.name == "hrv" ? sat.easedHrvZ : $1.z) * $1.w } / totalWeight
             let wouldBe = logisticScore(compositeZ: easedZ)
             lines.append("charge saturation active hrvZraw=\(r2(hrvZRaw)) rhrZ=\(r2(rhrZForGuard ?? 0)) "
-                + "damp=\(r2(sat.dampFraction)) wouldEaseHrvZTo=\(r2(sat.easedHrvZ)) "
-                + "wouldRaiseCharge=\(r2(wouldBe - s)) wouldBand=\(band(wouldBe)) "
-                + "(low HRV + low resting HR: candidate parasympathetic saturation. "
-                + "Easing DETECTED ONLY, not applied: the score above is unchanged)")
+                + "damp=\(r2(sat.dampFraction)) easedHrvZ=\(r2(sat.easedHrvZ)) "
+                + "raisedChargeTo=\(r2(s)) band=\(band(s)) "
+                + "(low HRV + low resting HR: parasympathetic saturation protected)")
         }
 
         return (score, lines)

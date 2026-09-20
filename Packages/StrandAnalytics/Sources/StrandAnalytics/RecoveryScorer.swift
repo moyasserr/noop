@@ -324,7 +324,8 @@ public enum RecoveryScorer {
                                 hrvBaselineUsable: Bool = true,
                                 recoveryIndexSlope: Double? = nil,
                                 effortBaseline: DriverBaseline? = nil,
-                                priorDayEffort: Double? = nil) -> Double? {
+                                priorDayEffort: Double? = nil,
+                                applyParasympatheticSaturation: Bool = true) -> Double? {
         // Cold-start gate: HRV is the dominant driver; if its baseline isn't
         // usable, refuse to score (more honest than a fabricated value).
         if !hrvBaselineUsable { return nil }
@@ -337,13 +338,18 @@ public enum RecoveryScorer {
         var terms: [(z: Double, w: Double)] = []
 
         // HRV term: higher is better.
-        //
-        // INSTRUMENT-FIRST CALL SITE for the parasympathetic-saturation guard. The guard is NOT applied
-        // here: this term is the RAW z, so Charge is byte-identical to pre-guard behaviour. The
-        // signature is still detected and reported out-of-band (Charge trace + ChargeDrivers verdict)
-        // so real firings can be counted first. See the MARK header for why, and swap in
-        // `parasympatheticSaturation(hrvZ:rhrZ:).easedHrvZ` here to enable it.
-        terms.append((zScore(hrv, mean: hrvB.mean, spread: hrvB.spread), wHRV))
+        // When applyParasympatheticSaturation is enabled (default), protect against false fatigue
+        // penalties when very low resting HR corroborates vagal/parasympathetic saturation.
+        let rawHrvZ = zScore(hrv, mean: hrvB.mean, spread: hrvB.spread)
+        let rhrZForGuard: Double? = rhrBaseline.map { zScore($0.mean, mean: rhr, spread: $0.spread) }
+        let effectiveHrvZ: Double
+        if applyParasympatheticSaturation {
+            let sat = parasympatheticSaturation(hrvZ: rawHrvZ, rhrZ: rhrZForGuard)
+            effectiveHrvZ = sat.easedHrvZ
+        } else {
+            effectiveHrvZ = rawHrvZ
+        }
+        terms.append((effectiveHrvZ, wHRV))
         // RHR term: lower is better → (μ − x) / σ.
         if let b = rhrBaseline {
             terms.append((zScore(b.mean, mean: rhr, spread: b.spread), wRHR))
@@ -403,7 +409,8 @@ public enum RecoveryScorer {
                                 skinTempDev: Double? = nil,
                                 recoveryIndexSlope: Double? = nil,
                                 effortBaseline: BaselineState? = nil,
-                                priorDayEffort: Double? = nil) -> Double? {
+                                priorDayEffort: Double? = nil,
+                                applyParasympatheticSaturation: Bool = true) -> Double? {
         recovery(hrv: hrv,
                  rhr: rhr,
                  resp: resp,
@@ -421,6 +428,7 @@ public enum RecoveryScorer {
                  hrvBaselineUsable: hrvBaseline.usable,
                  recoveryIndexSlope: recoveryIndexSlope,
                  effortBaseline: effortBaseline.map(DriverBaseline.init),
-                 priorDayEffort: priorDayEffort)
+                 priorDayEffort: priorDayEffort,
+                 applyParasympatheticSaturation: applyParasympatheticSaturation)
     }
 }
