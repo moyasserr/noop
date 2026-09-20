@@ -1701,8 +1701,8 @@ final class IntelligenceEngine: ObservableObject {
                 if !storedForDay.isEmpty {
                     scoringSessions = res.sleepSessions.map { s in
                         if let edit = storedForDay.first(where: { $0.startTs == s.start || ($0.startTs < s.end && $0.endTs > s.start) }) {
-                            let start = edit.startTsAdjusted != 0 ? edit.startTsAdjusted : edit.startTs
-                            return SleepSession(start: start, end: edit.endTs, efficiency: s.efficiency, stages: s.stages, restingHR: s.restingHR, avgHRV: s.avgHRV)
+                            let start = edit.effectiveStartTs
+                            return SleepSession(start: start, end: edit.endTs, efficiency: s.efficiency, stages: s.stages, restingHR: s.restingHR, avgHRV: s.avgHRV, hrOnly: s.hrOnly)
                         }
                         return s
                     }
