@@ -3379,9 +3379,7 @@ object SleepStager {
             // spurious successive difference, which is the exact spike the rejection above is meant to
             // remove. See HrvAnalyzer.rmssdGapAware.
             val cleaned = HrvAnalyzer.cleanRRGapAware(bucket)
-            // The same MIN_BEATS floor the spot reading and the SDNN index apply. The night is a plain mean
-            // over windows, so without it a window left with a handful of clean beats (a dropout, a
-            // movement-shredded stretch, a short final window) weighed as much as a full five minutes.
+            // The same MIN_BEATS floor (20, Baek 2015) the spot reading and the SDNN index apply.
             val rmssd = if (cleaned.nn.size >= HrvAnalyzer.MIN_BEATS) {
                 HrvAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous)
             } else null

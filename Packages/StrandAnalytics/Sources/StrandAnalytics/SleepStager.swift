@@ -3047,9 +3047,7 @@ public enum SleepStager {
             // #204/#195: gap-aware — a successive difference straddling a dropped beat is skipped so a
             // removed out-of-range/ectopic beat can't splice its neighbours into a spurious delta.
             let cleaned = HRVAnalyzer.cleanRRGapAware(bucket)
-            // The same `minBeats` floor the spot reading and the SDNN index apply. The night is a plain mean
-            // over windows, so without it a window left with a handful of clean beats (a dropout, a
-            // movement-shredded stretch, a short final window) weighed as much as a full five minutes.
+            // The same `minBeats` floor (20, Baek 2015) the spot reading and the SDNN index apply.
             let rmssd: Double? = (cleaned.nn.count >= HRVAnalyzer.minBeats)
                 ? HRVAnalyzer.rmssdGapAware(cleaned.nn, cleaned.contiguous) : nil
             let center = t + windowS / 2
