@@ -3415,7 +3415,7 @@ object SleepStager {
             if (validCount == 0) continue
             val firstW = run.first()
             val lastW = run.last()
-            val centerTs = (firstW.startTs + lastW.startTs + 300).toDouble() / 2.0
+            val centerTs = (firstW.startTs.toDouble() + lastW.startTs.toDouble() + 300.0) / 2.0
             val relPos = ((centerTs - sessionStart.toDouble()) / duration).coerceIn(0.0, 1.0)
             val timingWeight = 1.0 + 0.25 * (1.0 - relPos)
             val durationWeight = minOf(validCount.toDouble(), 6.0)

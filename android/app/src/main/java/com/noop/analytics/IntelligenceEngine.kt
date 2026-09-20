@@ -1428,7 +1428,7 @@ object IntelligenceEngine {
                 res.sleepSessions.map { s ->
                     val edit = storedForDay.firstOrNull { it.startTs == s.start || (it.startTs < s.end && it.endTs > s.start) }
                     if (edit != null) {
-                        val start = if (edit.startTsAdjusted != 0L) edit.startTsAdjusted else edit.startTs
+                        val start = edit.effectiveStartTs
                         s.copy(start = start, end = edit.endTs)
                     } else {
                         s

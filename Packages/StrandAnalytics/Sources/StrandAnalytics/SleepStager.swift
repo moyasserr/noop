@@ -3057,7 +3057,7 @@ public enum SleepStager {
     /// based on contiguous duration, valid RMSSD density, and early-night timing (accounting for the
     /// physiological reality that robust homeostatic SWS delta power concentrates in early cycles).
     /// Twin of Kotlin `SleepStager.optimalDeepRun`.
-    static func optimalDeepRun(_ windows: [HrvWindow], sessionStart: Int64, sessionEnd: Int64) -> [HrvWindow] {
+    static func optimalDeepRun(_ windows: [HrvWindow], sessionStart: Int, sessionEnd: Int) -> [HrvWindow] {
         var runs: [[HrvWindow]] = []
         var cur: [HrvWindow] = []
         for w in windows {
@@ -3078,7 +3078,7 @@ public enum SleepStager {
             let validCount = run.compactMap { $0.rmssd }.count
             guard validCount > 0 else { continue }
             guard let firstW = run.first, let lastW = run.last else { continue }
-            let centerTs = Double(firstW.startTs + lastW.startTs + 300) / 2.0
+            let centerTs = (Double(firstW.startTs) + Double(lastW.startTs) + 300.0) / 2.0
             let relPos = max(0.0, min(1.0, (centerTs - Double(sessionStart)) / duration))
             // Early-night timing bonus: SWS in early cycles represents deeper, more consolidated homeostatic delta power.
             let timingWeight = 1.0 + 0.25 * (1.0 - relPos)
