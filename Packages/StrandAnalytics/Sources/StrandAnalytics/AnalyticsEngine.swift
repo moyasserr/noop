@@ -714,12 +714,16 @@ public enum AnalyticsEngine {
         // call site" a scattered filter invites.
         let physiologyOnly = matched.filter { !$0.hrOnly }
         let physiologySessions = physiologyOnly.isEmpty ? matched : physiologyOnly
-        // #2522: use the gated lowest five-minute bin from the primary session, not its whole-session
-        // mean. Choosing the session first preserves #2358's nap protection; a shorter nap must not
-        // supply the daily RHR when the main night has no HR. #804's device-provided value still wins.
+        // Resting Heart Rate: Use representative stable-block RHR from the primary sleep session (#1169 / #2522),
+        // guarding against transient nocturnal bradycardia dips by evaluating stable, low-variability
+        // 30-min candidate blocks and taking the median of the lowest quartile.
+        // #804: Preserve ring/device-provided resting HR when present in `providedSleep`.
+        // Falls back to the unweighted primary session mean or primary session floor if coverage is sparse.
         let primarySession = physiologySessions.max(by: { ($0.end - $0.start) < ($1.end - $1.start) })
         let providedPrimaryRHR = primarySession
+            .flatMap { p in providedSleep.first(where: { $0.start == p.start && $0.end == p.end })?.restingHR }
         let restingHRDaily: Int? = providedPrimaryRHR
+            ?? primarySessionStableBlockRHR(sessions: physiologySessions, hr: hr).map { Int($0.rounded()) }
             ?? primarySessionRestingHR(sessions: physiologySessions, hr: hr).map { Int($0.rounded()) }
             ?? primarySession?.restingHR
             ?? physiologySessions.compactMap { $0.restingHR }.min()
@@ -727,19 +731,28 @@ public enum AnalyticsEngine {
         // Daily avg HRV = in-bed-weighted mean of per-session avg HRV (with Deep SWS priority).
         let avgHRVDaily: Double? = {
             if deepHrvWindow {
-                // WHOOP-style HRV: prioritize the last Slow-Wave Sleep (SWS) run, or deep-stage windows,
-                // instead of the whole-night mean. If deep sleep is sparse/absent, fall back to the whole-night mean.
+                // WHOOP-style HRV: prioritize the optimal Slow-Wave Sleep (SWS) run scored by duration,
+                // stability, and early-night timing. If sparse/absent, fall back to all deep windows,
+                // then strict Non-REM (light sleep, strictly excluding REM and Wake without unvalidated multipliers),
+                // and finally to the whole-night mean.
                 let rrSorted = rr.sortedByTsStable()
                 let windows = physiologySessions.flatMap { s in
                     SleepStager.sessionHrvWindows(start: s.start, end: s.end, rr: rrSorted, stages: s.stages)
                 }
-                let lastDeep = SleepStager.lastDeepRun(windows).compactMap { $0.rmssd }
-                if !lastDeep.isEmpty {
-                    return lastDeep.reduce(0, +) / Double(lastDeep.count)
+                let primaryStart = physiologySessions.map { $0.start }.min() ?? 0
+                let primaryEnd = physiologySessions.map { $0.end }.max() ?? 0
+                let bestDeep = SleepStager.optimalDeepRun(windows, sessionStart: primaryStart, sessionEnd: primaryEnd).compactMap { $0.rmssd }
+                if !bestDeep.isEmpty {
+                    return bestDeep.reduce(0, +) / Double(bestDeep.count)
                 }
                 let allDeep = windows.filter { $0.stage == "deep" }.compactMap { $0.rmssd }
                 if !allDeep.isEmpty {
                     return allDeep.reduce(0, +) / Double(allDeep.count)
+                }
+                // Strict Non-REM fallback (light sleep only; REM and Wake strictly excluded)
+                let nonRem = windows.filter { $0.stage == "light" }.compactMap { $0.rmssd }
+                if !nonRem.isEmpty {
+                    return nonRem.reduce(0, +) / Double(nonRem.count)
                 }
             }
             // A main night REFUSED by the #1118 over-count gate is not replaced by the day's naps. The
@@ -1455,6 +1468,26 @@ public enum AnalyticsEngine {
         minValidSamples: Int = PrimarySessionRestingHR.defaultMinValidSamples) -> Double? {
         PrimarySessionRestingHR.meanHR(sessions: primarySessions(sessions: sessions, hr: hr),
                                        validBpm: validBpm, minValidSamples: minValidSamples)
+    }
+
+    /// RHR derived from a stable, low-variability sleep block within the primary session.
+    /// Byte-parity twin of the Kotlin `primarySessionStableBlockRHR`.
+    public static func primarySessionStableBlockRHR(
+        sessions: [SleepSession], hr: [HRSample],
+        validBpm: ClosedRange<Int> = PrimarySessionRestingHR.defaultValidBpm,
+        maxSigma: Double = PrimarySessionRestingHR.defaultStableBlockMaxSigma,
+        primaryBlockLength: Int = PrimarySessionRestingHR.defaultBlockSampleCount,
+        stepLength: Int = PrimarySessionRestingHR.defaultBlockStepSamples,
+        fallbackBlockLength: Int = PrimarySessionRestingHR.fallbackBlockSampleCount,
+        minValidSamples: Int = PrimarySessionRestingHR.defaultMinValidSamples) -> Double? {
+        PrimarySessionRestingHR.stableBlockRHR(
+            sessions: primarySessions(sessions: sessions, hr: hr),
+            validBpm: validBpm,
+            maxSigma: maxSigma,
+            primaryBlockLength: primaryBlockLength,
+            stepLength: stepLength,
+            fallbackBlockLength: fallbackBlockLength,
+            minValidSamples: minValidSamples)
     }
 
     /// #1169 coverage inputs for the shadow `rhr_primary_session` mean (valid-sample count + primary-session

@@ -30,8 +30,8 @@ final class RecoverySaturationGuardTests: XCTestCase {
     /// The plain HRV+RHR composite with NO easing: the score pre-guard behaviour produces.
     private func undampedScore(hrv: Double, rhr: Double,
                                hrvB: BaselineState, rhrB: BaselineState) -> Double {
-        let hrvZ = RecoveryScorer.zScore(hrv, mean: hrvB.baseline, spread: hrvB.spread)
-        let rhrZ = RecoveryScorer.zScore(rhrB.baseline, mean: rhr, spread: rhrB.spread)
+        let hrvZ = RecoveryScorer.zScore(hrv, mean: hrvB.baseline, spread: hrvB.spread)!
+        let rhrZ = RecoveryScorer.zScore(rhrB.baseline, mean: rhr, spread: rhrB.spread)!
         let wsum = RecoveryScorer.wHRV + RecoveryScorer.wRHR
         let z = (RecoveryScorer.wHRV * hrvZ + RecoveryScorer.wRHR * rhrZ) / wsum
         return 100.0 / (1.0 + exp(-RecoveryScorer.logisticK * (z - RecoveryScorer.logisticZ0)))
@@ -98,39 +98,39 @@ final class RecoverySaturationGuardTests: XCTestCase {
 
     // MARK: - Non-application: the detected easing must NOT move Charge
 
-    func testSaturationNightScoresTheRawUndampedCompositeWhenDisabled() {
-        // When explicitly disabled, recovery() must return EXACTLY the raw composite: the score is
-        // byte-identical to pre-guard behaviour.
+    func testSaturationNightScoresTheRawUndampedCompositeUnchanged() {
+        // THE CORE INSTRUMENT-FIRST GUARANTEE. This night fires the guard (damp = 0.45, a would-be ~18-point
+        // lift), yet recovery() must return EXACTLY the raw composite: the score is byte-identical to
+        // pre-guard behaviour.
         let hrvB = baseline(mean: 50, sigma: 6.265)
         let rhrB = baseline(mean: 55, sigma: 5.0)
 
         // Confirm this fixture really does trip the detector (otherwise the test proves nothing).
-        let hrvZ = RecoveryScorer.zScore(41, mean: hrvB.baseline, spread: hrvB.spread)
-        let rhrZ = RecoveryScorer.zScore(rhrB.baseline, mean: 48, spread: rhrB.spread)
+        let hrvZ = RecoveryScorer.zScore(41, mean: hrvB.baseline, spread: hrvB.spread)!
+        let rhrZ = RecoveryScorer.zScore(rhrB.baseline, mean: 48, spread: rhrB.spread)!
         let sat = RecoveryScorer.parasympatheticSaturation(hrvZ: hrvZ, rhrZ: rhrZ)
         XCTAssertTrue(sat.active, "fixture must fire the guard for this test to mean anything")
         XCTAssertGreaterThan(sat.dampFraction, 0.4)
 
         let scored = RecoveryScorer.recovery(
             hrv: 41, rhr: 48, resp: nil,
-            hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil,
-            applyParasympatheticSaturation: false)!
+            hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil)!
         XCTAssertEqual(scored, undampedScore(hrv: 41, rhr: 48, hrvB: hrvB, rhrB: rhrB),
-                       accuracy: 1e-9, "a firing night must score the RAW composite when easing is disabled")
+                       accuracy: 1e-9, "a firing night must still score the RAW composite (easing not applied)")
     }
 
-    func testSaturationNightAppliesEasingByDefault() {
-        // When enabled by default, the saturation easing protects against false fatigue penalties
-        // when both resting HR and HRV are low in well-rested fit individuals.
+    func testSaturationNightStaysRedExactlyLikeBeforeTheGuard() {
+        // The would-be easing on this fixture is large enough to cross red -> yellow. Instrument-first means
+        // the band must NOT move: the night stays red until the easing is validated and enabled.
         let hrvB = baseline(mean: 50, sigma: 6.265)
         let rhrB = baseline(mean: 55, sigma: 5.0)
-
-        let raw = undampedScore(hrv: 41, rhr: 48, hrvB: hrvB, rhrB: rhrB)
-        let eased = RecoveryScorer.recovery(
+        let saturation = RecoveryScorer.recovery(
             hrv: 41, rhr: 48, resp: nil,
             hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil)!
-        XCTAssertGreaterThan(eased, raw,
-                             "parasympathetic saturation protection must lift the night above the raw penalty")
+        XCTAssertTrue(saturation < RecoveryScorer.bandRedMax,
+                      "detection must not lift the night out of red while the easing is off")
+        XCTAssertEqual(saturation, undampedScore(hrv: 41, rhr: 48, hrvB: hrvB, rhrB: rhrB),
+                       accuracy: 1e-9, "the scored value must equal the pre-guard composite verbatim")
     }
 
     func testRealFatigueNightIsUnchangedToo() {
@@ -185,7 +185,7 @@ final class RecoverySaturationGuardTests: XCTestCase {
         XCTAssertLessThan(delta, 21.0)
 
         // ...and the HRV TERM in the trace is the RAW z, matching what was actually scored.
-        let hrvZRaw = RecoveryScorer.zScore(41, mean: hrvB.baseline, spread: hrvB.spread)
+        let hrvZRaw = RecoveryScorer.zScore(41, mean: hrvB.baseline, spread: hrvB.spread)!
         let hrvTerm = satLines.first { $0.hasPrefix("charge term hrv ") }!
         XCTAssertTrue(hrvTerm.contains("z=\((hrvZRaw * 100).rounded() / 100)"),
                       "trace HRV term must be the raw scored z, not the eased one: \(hrvTerm)")
@@ -223,5 +223,29 @@ final class RecoverySaturationGuardTests: XCTestCase {
         XCTAssertTrue(fatHRV.verdict.contains("limiting recovery"))
         XCTAssertFalse(fatHRV.verdict.contains("saturation"))
         XCTAssertLessThan(fatHRV.deltaPoints, 0)
+    }
+
+    func testEpsilonSpreadGuardsNearZeroVariance() {
+        let hrvB = BaselineState(baseline: 50, spread: 0.05, nValid: 14, nightsSinceUpdate: 0, status: .trusted)
+        let rhrB = baseline(mean: 55, sigma: 5.0)
+        // Zero/near-zero variance in dominant driver must yield nil score
+        XCTAssertNil(RecoveryScorer.recovery(hrv: 50, rhr: 55, resp: nil, hrvBaseline: hrvB, rhrBaseline: rhrB, respBaseline: nil, sleepPerf: nil))
+        // And zScore directly returns nil
+        XCTAssertNil(RecoveryScorer.zScore(50, mean: 50, spread: 0.05))
+    }
+
+    func testAssessVagalSaturation() {
+        let hrvB = RecoveryScorer.DriverBaseline(mean: 65.0, spread: 6.0 / 1.253)
+        let rhrB = RecoveryScorer.DriverBaseline(mean: 48.0, spread: 4.0 / 1.253)
+        // Decoupled night (low HRV, low RHR) with aerobic baseline
+        let assessment = RecoveryScorer.assessVagalSaturation(
+            hrvZ: -1.5,
+            rhrZ: 1.5,
+            hrvBaseline: hrvB,
+            rhrBaseline: rhrB,
+            baselineNights: 20
+        )
+        XCTAssertTrue(assessment.possibleVagalSaturation)
+        XCTAssertEqual(assessment.confidence, "high")
     }
 }
