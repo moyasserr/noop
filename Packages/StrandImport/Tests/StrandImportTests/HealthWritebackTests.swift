@@ -339,4 +339,36 @@ final class HealthWritebackTests: XCTestCase {
         swept = HealthWriteback.strandedSweepResult(swept: swept, succeededThisRun: ["sleepAnalysis"])
         XCTAssertEqual(swept, ["restingHeartRate", "sleepAnalysis"])
     }
+
+    func testANightEndingAtTheNewestHeartRateIsStillOpen() {
+        // Synced to 06:54 while the wearer slept on: the detected night ends at 06:53.
+        XCTAssertTrue(HealthWriteback.nightIsStillOpen(endTs: 1_000, newestHeartRateTs: 1_060, now: 1_600))
+    }
+
+    func testANightWithHeartRateWellPastItsEndIsClosed() {
+        XCTAssertFalse(HealthWriteback.nightIsStillOpen(endTs: 1_000, newestHeartRateTs: 1_000 + 20 * 60, now: 3_000))
+    }
+
+    func testANightIsWrittenAfterTheMaximumHoldEvenWithNoNewerHeartRate() {
+        // Strap taken off to charge at wake: no newer heart rate arrives.
+        XCTAssertTrue(HealthWriteback.nightIsStillOpen(endTs: 1_000, newestHeartRateTs: 1_000, now: 1_000 + 2 * 3_600 - 1))
+        XCTAssertFalse(HealthWriteback.nightIsStillOpen(endTs: 1_000, newestHeartRateTs: 1_000, now: 1_000 + 2 * 3_600))
+    }
+
+    func testABatchFingerprintIgnoresOrderAndSeesEveryChange() {
+        let a = HealthWriteback.batchFingerprint(["k1|55|100", "k2|60|200"])
+        XCTAssertEqual(a, HealthWriteback.batchFingerprint(["k2|60|200", "k1|55|100"]))
+        XCTAssertNotEqual(a, HealthWriteback.batchFingerprint(["k1|55|100", "k2|61|200"]))
+        XCTAssertNotEqual(a, HealthWriteback.batchFingerprint(["k1|55|100"]))
+        // Descriptor boundaries count: "ab"+"c" is not "a"+"bc".
+        XCTAssertNotEqual(HealthWriteback.batchFingerprint(["ab", "c"]), HealthWriteback.batchFingerprint(["a", "bc"]))
+    }
+
+    func testAnUnchangedBatchIsSkippedOnlyWhileTheLastWriteIsRecent() {
+        let day = HealthWriteback.unchangedRewriteIntervalSeconds
+        XCTAssertTrue(HealthWriteback.canSkipUnchangedWrite(fingerprint: "f", lastFingerprint: "f", lastWrittenAt: 1_000, now: 1_000 + day - 1))
+        XCTAssertFalse(HealthWriteback.canSkipUnchangedWrite(fingerprint: "f", lastFingerprint: "f", lastWrittenAt: 1_000, now: 1_000 + day))
+        XCTAssertFalse(HealthWriteback.canSkipUnchangedWrite(fingerprint: "g", lastFingerprint: "f", lastWrittenAt: 1_000, now: 1_001))
+        XCTAssertFalse(HealthWriteback.canSkipUnchangedWrite(fingerprint: "f", lastFingerprint: nil, lastWrittenAt: nil, now: 1_001))
+    }
 }

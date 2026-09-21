@@ -181,6 +181,54 @@ public enum HealthWriteback {
         appleHealthExternalUUID(kind: metricId, identity: day)
     }
 
+    /// How close to the newest heart rate a night may end and still be read as unfinished.
+    public static let openNightMarginSeconds = 20 * 60
+
+    /// How long after its end a night is final even with no newer heart rate, so a strap taken off at
+    /// wake (charging, say) does not hold the night back indefinitely.
+    public static let openNightMaxHoldSeconds = 2 * 3_600
+
+    /// Whether a detected night may still be growing: it ends where the synced heart rate ends.
+    ///
+    /// A night is detected from whatever has synced so far, so a pass during the night ends it at the
+    /// newest sample. That truncated night used to reach Apple Health like a finished one, and a reader
+    /// took its end as the wake: a field night slept to 09:36 was in Health as ending 06:53, with vitals
+    /// scored from the first six hours, until a later write-back replaced it. Holding a night whose end
+    /// sits within `openNightMarginSeconds` of the newest heart rate keeps it out until the strap has
+    /// seen the wearer awake; after `openNightMaxHoldSeconds` it is written regardless.
+    public static func nightIsStillOpen(endTs: Int, newestHeartRateTs: Int, now: Int) -> Bool {
+        newestHeartRateTs - endTs < openNightMarginSeconds && now - endTs < openNightMaxHoldSeconds
+    }
+
+    // MARK: - Skipping an unchanged rewrite
+
+    /// How long an unchanged batch may go without being rewritten. The skip trusts that Health still holds
+    /// what was written; a daily rewrite restores anything removed there since (a user clearing NOOP's data
+    /// in the Health app, say) without paying for a rewrite on every sync.
+    public static let unchangedRewriteIntervalSeconds = 24 * 3_600
+
+    /// A fingerprint of a batch about to be written: one descriptor per sample, order-independent. FNV-1a
+    /// over the sorted descriptors, so it is stable across launches and devices, unlike `Hasher`.
+    public static func batchFingerprint(_ descriptors: [String]) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for descriptor in descriptors.sorted() {
+            for byte in descriptor.utf8 { hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3 }
+            hash = (hash ^ 0x0a) &* 0x0000_0100_0000_01b3
+        }
+        return "\(descriptors.count):" + String(hash, radix: 16)
+    }
+
+    /// Whether a write can be skipped: the batch is identical to the last one that saved, and that save is
+    /// recent enough to trust (`unchangedRewriteIntervalSeconds`).
+    ///
+    /// The write-back runs after every completed offload, about every 10 minutes while a strap is connected,
+    /// and each run deleted and re-saved fourteen days of sleep, vitals and workouts that had not changed.
+    public static func canSkipUnchangedWrite(fingerprint: String, lastFingerprint: String?, lastWrittenAt: Int?,
+                                             now: Int) -> Bool {
+        guard let lastFingerprint, let lastWrittenAt else { return false }
+        return lastFingerprint == fingerprint && now - lastWrittenAt < unchangedRewriteIntervalSeconds
+    }
+
     /// The sleep key: `noop:sleep:<startTs>`.
     public static func appleHealthSleepKey(startTs: Int) -> String {
         appleHealthExternalUUID(kind: "sleep", identity: "\(startTs)")
