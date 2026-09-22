@@ -23,6 +23,8 @@ jobs:
     outputs:
       tag: ${{ steps.m.outputs.tag }}
       ver: ${{ steps.m.outputs.ver }}
+      build: ${{ steps.m.outputs.build }}
+      sha: ${{ steps.m.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
       - id: m
@@ -32,9 +34,13 @@ jobs:
           TAG="testing-latest"
           DATE=$(date -u +%Y-%m-%d)
           VER=$(grep -m1 'MARKETING_VERSION' project.yml | sed -E 's/.*"([^"]+)".*/\1/')
+          BASE_BUILD=$(grep -m1 'CURRENT_PROJECT_VERSION:' project.yml | sed -E 's/.*"([0-9]+)".*/\1/')
+          BUILD=$(( BASE_BUILD + GITHUB_RUN_NUMBER ))
           SHA="${GITHUB_SHA:0:7}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           # ROLLING release: recreate the single tag so stale (incl. old-version) assets never linger —
           # one stable URL, always the newest build, zero cleanup. (To KEEP a build, cut a one-off tag.)
           #
@@ -201,12 +207,17 @@ jobs:
         run: >-
           xcodebuild -scheme NOOPiOS -configuration Release -destination 'generic/platform=iOS'
           -derivedDataPath build/dd
+          CURRENT_PROJECT_VERSION="${{ needs.meta.outputs.build }}"
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
           build
       - name: Package sideload .ipa (strip watch, preserve app/widget capabilities) + attach
         env:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ needs.meta.outputs.ver }}
+          BUILD: ${{ needs.meta.outputs.build }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          SHA: ${{ needs.meta.outputs.sha }}
+          REF: ${{ github.ref_name }}
         run: |
           APP=$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -1)
           test -n "$APP" || { echo ".app (iphoneos) not found"; exit 1; }
@@ -221,8 +232,83 @@ jobs:
           # provisions the shared container instead of treating both executables as entitlement-free.
           Tools/prepare-ios-sideload-app.sh "$APP"
           rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
-          zip -qr "NOOP-ios-unsigned-v${VER}.ipa" Payload
-          gh release upload "${{ needs.meta.outputs.tag }}" "NOOP-ios-unsigned-v${VER}.ipa" --repo "$GITHUB_REPOSITORY" --clobber
+          IPA="NOOP-ios-unsigned-v${VER}.ipa"
+          zip -qr "$IPA" Payload
+          gh release upload "$TAG" "$IPA" --repo "$GITHUB_REPOSITORY" --clobber
+
+          # Update the stable AltStore source manifest for one-tap in-place updates
+          SIZE=$(stat -f%z "$IPA")
+          DATE=$(date -u +%Y-%m-%d)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${IPA}"
+          SOURCE_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${REF}/altstore-source.json"
+          DESC="NOOP ${VER} (testing build ${BUILD}, commit ${SHA}). Sideload testing build with max iPhone accuracy fixes."
+          MINOS="17.0"
+
+          cat <<EOF > altstore-source.json
+          {
+            "name": "NOOP (Testing)",
+            "identifier": "com.noopapp.noop.testing.altstore",
+            "sourceURL": "${SOURCE_URL}",
+            "subtitle": "Standalone WHOOP companion — testing builds with max iPhone accuracy fixes.",
+            "description": "An AltStore / SideStore source for NOOP testing builds with max iPhone accuracy fixes.\n\nReads your WHOOP strap directly over Bluetooth on your iPhone with zero cloud dependencies.",
+            "iconURL": "https://github.com/ryanbr/noop/raw/main/Strand/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
+            "website": "https://github.com/${GITHUB_REPOSITORY}",
+            "tintColor": "44E2B0",
+            "apps": [
+              {
+                "name": "NOOP",
+                "bundleIdentifier": "com.noopapp.noop",
+                "developerName": "NoopApp",
+                "subtitle": "Read your own WHOOP strap, fully offline.",
+                "localizedDescription": "NOOP talks to a WHOOP 4.0 / 5.0 / MG strap you own directly over Bluetooth — no WHOOP app, no subscription, no cloud. Live heart rate, history sync, and NOOP's own Charge / Effort / Rest scores, all computed on-device and stored only on your iPhone.\n\nIndependent and experimental; not affiliated with WHOOP. Testing build with max iPhone accuracy fixes.",
+                "iconURL": "https://github.com/ryanbr/noop/raw/main/Strand/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
+                "tintColor": "44E2B0",
+                "category": "healthcare-fitness",
+                "screenshotURLs": [],
+                "versions": [
+                  {
+                    "version": "${VER}",
+                    "buildVersion": "${BUILD}",
+                    "date": "${DATE}",
+                    "localizedDescription": "${DESC}",
+                    "downloadURL": "${URL}",
+                    "size": ${SIZE},
+                    "minOSVersion": "${MINOS}"
+                  }
+                ],
+                "version": "${VER}",
+                "buildVersion": "${BUILD}",
+                "versionDate": "${DATE}",
+                "versionDescription": "${DESC}",
+                "downloadURL": "${URL}",
+                "size": ${SIZE},
+                "minOSVersion": "${MINOS}"
+              }
+            ]
+          }
+          EOF
+
+          # Format and validate JSON
+          jq . altstore-source.json > altstore-source.tmp && mv altstore-source.tmp altstore-source.json
+
+          # Attach altstore-source.json to the release as an asset
+          gh release upload "$TAG" altstore-source.json --repo "$GITHUB_REPOSITORY" --clobber
+
+          # Commit updated manifest back to the branch with [skip ci] so the raw GitHub URL is immediately current
+          TARGET_BRANCH="$REF"
+          if [ "$TARGET_BRANCH" = "noop-staging" ]; then
+            TARGET_BRANCH="main"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add altstore-source.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update AltStore manifest for testing build ${VER} (${BUILD}) [skip ci]"
+            git pull --rebase origin "$TARGET_BRANCH" || true
+            git push origin "HEAD:$TARGET_BRANCH" || {
+              echo "::warning::could not push altstore-source.json to $TARGET_BRANCH; release asset is still current."
+            }
+          fi
 
   # Fork-only housekeeping: the disposable `noop-staging` branch exists ONLY to feed this build. Once every
   # platform job has finished (pass OR fail — always()), delete it so GitHub's "Compare & pull request"
