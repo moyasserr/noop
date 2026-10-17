@@ -209,21 +209,6 @@ object RecoveryScorer {
     )
 
     /**
-     * Detect parasympathetic saturation from tonight's HRV and resting-HR z-scores and compute the
-     * easing that WOULD be applied to the low-HRV penalty (shrinking its negative z toward 0). Mirrors
-     * Swift `RecoveryScorer.parasympatheticSaturation` byte-for-byte.
-     *
-     * This is pure detection + a counterfactual. It has no effect on Charge: recovery() scores the raw
-     * HRV z regardless of what this returns. See the header above for the validation gap and the
-     * contested premise that keep the easing switched off.
-     *
-     * @param hrvZ the HRV term as recovery() builds it, (hrv - mu)/sigma. Higher is better; a NEGATIVE
-     *   value means HRV is below baseline (the penalty direction).
-     * @param rhrZ the resting-HR term as recovery() builds it, (mu - rhr)/sigma. Higher is better; a
-     *   POSITIVE value means resting HR is below baseline (the recovery-good direction). null when there
-     *   is no resting-HR baseline — with nothing to corroborate the low HRV, the guard never fires.
-     */
-    /**
      * Vagal (parasympathetic) saturation assessment.
      * Advisory / probabilistic model requiring longitudinal baseline context rather than acute easing.
      */
