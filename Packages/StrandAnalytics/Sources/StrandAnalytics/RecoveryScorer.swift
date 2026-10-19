@@ -504,7 +504,6 @@ public enum RecoveryScorer {
                  hrvBaselineUsable: hrvBaseline.usable,
                  recoveryIndexSlope: recoveryIndexSlope,
                  effortBaseline: effortBaseline.flatMap { $0.usable ? $0 : nil }.map(DriverBaseline.init),
-                 priorDayEffort: priorDayEffort,
-                 applyParasympatheticSaturation: applyParasympatheticSaturation)
+                 priorDayEffort: priorDayEffort)
     }
 }
